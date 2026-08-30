@@ -44,20 +44,27 @@ public class StandardMacros {
 
     private static String makeAngelicaVersion()
     {
-        String[] parts = Tags.VERSION.split("[.-]");
-        int major = Integer.parseInt(parts[0]);
-        int minor = Integer.parseInt(parts[1]);
-        int patch = Integer.parseInt(parts[2]);
-        int sub = 0;
+        try {
+            // Strip non-digit prefix (e.g. the "v" in "v77.10.24") so git tag naming is flexible
+            String[] parts = Tags.VERSION.replaceFirst("^[^0-9]+", "").split("[.-]");
+            int major = Integer.parseInt(parts[0]);
+            int minor = Integer.parseInt(parts[1]);
+            int patch = Integer.parseInt(parts[2]);
+            int sub = 0;
 
-        // Handle optional prerelease (like beta62)
-        if (parts.length > 3) {
-            String pre = parts[3];
-            String num = pre.replaceAll("\\D+", ""); // remove all non-digits
-            if (!num.isEmpty())
-                sub = Integer.parseInt(num);
+            // Handle optional prerelease (like beta62)
+            if (parts.length > 3) {
+                String pre = parts[3];
+                String num = pre.replaceAll("\\D+", ""); // remove all non-digits
+                if (!num.isEmpty())
+                    sub = Integer.parseInt(num);
+            }
+            return String.format("%d%02d%02d%03d", major, minor, patch, sub);
+        } catch (Exception e) {
+            // Unparseable version (e.g. NO-GIT-TAG-SET): report as the format's ceiling so
+            // shaderpack version gates don't downgrade us to an ancient version
+            return "99999999";
         }
-        return String.format("%d%02d%02d%03d", major, minor, patch, sub);
     }
 
 	public static Iterable<StringPair> createStandardEnvironmentDefines() {
