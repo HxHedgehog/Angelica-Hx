@@ -15,7 +15,7 @@ import static com.gtnewhorizons.angelica.AngelicaMod.MOD_ID;
 
 @Mod(
         modid = MOD_ID,
-        name = "Angelica",
+        name = "Angelica Hx",
         version = Tags.VERSION,
         dependencies = """
             required-after:gtnhlib@[0.11.19,);\
