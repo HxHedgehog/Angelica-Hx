@@ -4,7 +4,9 @@ import com.gtnewhorizons.angelica.config.AngelicaConfig;
 import com.gtnewhorizons.angelica.glsm.GLStateManager;
 import com.gtnewhorizons.angelica.mixins.interfaces.IBatchEligibility;
 import com.gtnewhorizons.angelica.rendering.tesr.BatchEligibility;
+import com.gtnewhorizons.angelica.rendering.tesr.PartBatchingExemptions;
 import com.gtnewhorizons.angelica.rendering.tesr.TesrProviderDispatch;
+import net.minecraft.block.Block;
 import net.minecraft.client.renderer.tileentity.TileEntityRendererDispatcher;
 import net.minecraft.client.renderer.tileentity.TileEntitySpecialRenderer;
 import net.minecraft.tileentity.TileEntity;
@@ -24,7 +26,14 @@ public class MixinTileEntityRendererDispatcher {
         }
 
         final IBatchEligibility holder = (IBatchEligibility) renderer;
-        final byte state = holder.angelica$batchState();
+        byte state = holder.angelica$batchState();
+        if (state != BatchEligibility.DENIED) {
+            final Block block = te.getBlockType();
+            final String blockName = block == null ? null : (String) Block.blockRegistry.getNameForObject(block);
+            if (PartBatchingExemptions.isDenied(blockName, renderer.getClass().getSimpleName())) {
+                state = BatchEligibility.DENIED;
+            }
+        }
         BatchEligibility.begin(state, GLStateManager.drawCalls);
         try {
             renderer.renderTileEntityAt(te, x, y, z, partialTicks);
