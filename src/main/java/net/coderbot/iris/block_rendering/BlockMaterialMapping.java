@@ -1,5 +1,6 @@
 package net.coderbot.iris.block_rendering;
 
+import com.gtnewhorizons.angelica.api.ShaderBlockTags;
 import com.gtnewhorizons.angelica.compat.ModStatus;
 import com.gtnewhorizons.angelica.rendering.celeritas.BlockRenderLayer;
 import it.unimi.dsi.fastutil.ints.Int2IntMap;
@@ -132,6 +133,16 @@ public class BlockMaterialMapping {
 									  NbtConditionalIdMap<Block> tileEntityMap, int intId,
 									  boolean skipFlattening, ReferenceSet<Block> snowyBlocks) {
 		final NamespacedId id = entry.id();
+
+		// tag:<name> entries expand to the runtime tag registry (see ShaderBlockTags);
+		// no flattening or NBT handling applies to them.
+		if ("tag".equals(id.getNamespace())) {
+			for (Block block : ShaderBlockTags.getBlocks(id.getName())) {
+				applyMetas(block, entry.metas(), idMap, intId, 0);
+			}
+			return;
+		}
+
 		final Map<String, String> stateProps = entry.stateProperties();
 		final String snowy = stateProps.get("snowy");
 		final int snowyBit = "true".equals(snowy) ? SNOWY_META_BIT : 0;

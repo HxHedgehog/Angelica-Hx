@@ -15,13 +15,20 @@ import com.gtnewhorizons.angelica.rendering.celeritas.light.LightDataCache;
 import com.gtnewhorizons.angelica.rendering.celeritas.light.VanillaDiffuseProvider;
 import com.gtnewhorizons.angelica.rendering.celeritas.world.WorldSlice;
 import it.unimi.dsi.fastutil.floats.FloatArrayList;
+import it.unimi.dsi.fastutil.ints.Int2IntMap;
+import it.unimi.dsi.fastutil.objects.Reference2ObjectMap;
 import lombok.Getter;
+import net.coderbot.iris.block_rendering.BlockMaterialMapping;
 import net.coderbot.iris.block_rendering.BlockRenderingSettings;
 import net.coderbot.iris.vertices.ExtendedDataHelper;
 import net.irisshaders.iris.api.v0.IrisApi;
+import net.minecraft.block.Block;
+import net.minecraft.block.BlockDynamicLiquid;
+import net.minecraft.block.BlockStaticLiquid;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.WorldClient;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
+import net.minecraft.init.Blocks;
 import net.minecraft.tileentity.TileEntity;
 import net.minecraft.world.IBlockAccess;
 import org.embeddedt.embeddium.api.util.ColorABGR;
@@ -269,6 +276,19 @@ public class AngelicaChunkBuildContext extends ChunkBuildContext {
             final int shaderOverrideBlockId = shaderOverrideBlockIds[quadIdx * 4];
             blockRenderContext.blockId = shaderOverrideBlockId != -1 ? (short) shaderOverrideBlockId : originalBlockId;
 
+            // ISBRHs that paint pseudo-liquid volumes (e.g. pseudo-waterlogged ocean plants)
+            // submit vanilla water/lava sprites from a block the shader pack may not map (or
+            // may map to a plant id), so their quads would carry the wrong mc_Entity and
+            // water/lava programs would never apply. Liquid sprites take priority over the
+            // block-level id (the pack's fluid id, resolved per-metadata, is idempotent for
+            // real fluids); an explicit shader override still wins.
+            if (shaderOverrideBlockId == -1 && shaderActive) {
+                final short paintedLiquidId = resolvePaintedLiquidId(sprite, blockRenderContext.metadata);
+                if (paintedLiquidId != -1) {
+                    blockRenderContext.blockId = paintedLiquidId;
+                }
+            }
+
             if (correctMaterial != material && builder.getEncoder() instanceof IrisExtendedChunkVertexEncoder iris) {
                 iris.setContext(blockRenderContext);
             }
@@ -300,6 +320,43 @@ public class AngelicaChunkBuildContext extends ChunkBuildContext {
         } else if (!isFluid) {
             fluidQuadLightFace = null;
         }
+    }
+
+    /**
+     * Returns the shader pack's liquid block id for quads painted with a vanilla
+     * still/flowing water or lava sprite, or -1 when the sprite isn't a borrowed
+     * liquid icon or the pack doesn't map that liquid.
+     */
+    private short resolvePaintedLiquidId(TextureAtlasSprite sprite, int metadata) {
+        if (sprite == null) return -1;
+
+        Block liquid = null;
+        if (borrowsLiquidIcon(Blocks.water, sprite)) liquid = Blocks.water;
+        else if (borrowsLiquidIcon(Blocks.lava, sprite)) liquid = Blocks.lava;
+        if (liquid == null) return -1;
+
+        final Reference2ObjectMap<Block, Int2IntMap> metaMatches = BlockRenderingSettings.INSTANCE.getBlockMetaMatches();
+        while (metaMatches != null && liquid != null) {
+            final Int2IntMap metaMap = metaMatches.get(liquid);
+            if (metaMap != null) {
+                final int id = BlockMaterialMapping.resolveId(metaMap, metadata);
+                if (id != -1) return (short) id;
+            }
+            liquid = liquidCounterpart(liquid);
+        }
+        return -1;
+    }
+
+    /// Liquid quads use the still icon on bottom/top faces and the flowing icon on sides
+    private static boolean borrowsLiquidIcon(Block liquid, TextureAtlasSprite sprite) {
+        return sprite == liquid.getIcon(0, 0) || sprite == liquid.getIcon(2, 0);
+    }
+
+    private static Block liquidCounterpart(Block block) {
+        // vanilla ids: 8=flowing_water(dynamic), 9=water(static), 10=flowing_lava, 11=lava
+        if (block instanceof BlockStaticLiquid) return Block.getBlockById(Block.getIdFromBlock(block) - 1);
+        if (block instanceof BlockDynamicLiquid) return Block.getBlockById(Block.getIdFromBlock(block) + 1);
+        return null;
     }
 
     private boolean isReversedFluidQuad() {

@@ -5,6 +5,7 @@ public class BlockRenderContext {
     public short blockId = -1;
     public short renderType = -1;
     public byte lightValue;
+    public int metadata;
 
     public void set(int localX, int localY, int localZ, short blockId, short renderType, byte lightValue) {
         this.localPosX = localX;
@@ -19,5 +20,6 @@ public class BlockRenderContext {
         blockId = -1;
         renderType = -1;
         lightValue = 0;
+        metadata = 0;
     }
 }

@@ -56,6 +56,7 @@ public class IrisExtendedChunkVertexEncoder implements ContextAwareChunkVertexEn
         ctx.blockId = (short) (metaMap != null ? BlockMaterialMapping.resolveId(metaMap, metadata) : -1);
         ctx.renderType = renderType;
         ctx.lightValue = lightValue;
+        ctx.metadata = metadata;
     }
 
     @Override
@@ -64,6 +65,7 @@ public class IrisExtendedChunkVertexEncoder implements ContextAwareChunkVertexEn
         ctx.blockId = (short) resolveFluidBlockId(block, metadata);
         ctx.renderType = ExtendedDataHelper.FLUID_RENDER_TYPE;
         ctx.lightValue = lightValue;
+        ctx.metadata = metadata;
     }
 
     /**
