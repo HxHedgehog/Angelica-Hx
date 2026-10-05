@@ -31,6 +31,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 public class StandardMacros {
@@ -42,29 +44,25 @@ public class StandardMacros {
 		defines.add(new StringPair(key, value));
 	}
 
+    private static final Pattern ANGELICA_VERSION_PATTERN = Pattern.compile("^(\\d+)\\.(\\d+)\\.(\\d+)(?:-(?:alpha|beta|pre|rc)(\\d{1,3}))?");
+
     private static String makeAngelicaVersion()
     {
-        try {
-            // Strip non-digit prefix (e.g. the "v" in "v77.10.24") so git tag naming is flexible
-            String[] parts = Tags.VERSION.replaceFirst("^[^0-9]+", "").split("[.-]");
-            int major = Integer.parseInt(parts[0]);
-            int minor = Integer.parseInt(parts[1]);
-            int patch = Integer.parseInt(parts[2]);
-            int sub = 0;
+        return formatAngelicaVersion(Tags.VERSION);
+    }
 
-            // Handle optional prerelease (like beta62)
-            if (parts.length > 3) {
-                String pre = parts[3];
-                String num = pre.replaceAll("\\D+", ""); // remove all non-digits
-                if (!num.isEmpty())
-                    sub = Integer.parseInt(num);
-            }
-            return String.format("%d%02d%02d%03d", major, minor, patch, sub);
-        } catch (Exception e) {
-            // Unparseable version (e.g. NO-GIT-TAG-SET): report as the format's ceiling so
-            // shaderpack version gates don't downgrade us to an ancient version
+    static String formatAngelicaVersion(String raw)
+    {
+        final Matcher matcher = ANGELICA_VERSION_PATTERN.matcher(raw);
+        if (!matcher.find()) {
+            Iris.logger.warn("Could not parse Angelica version \"{}\"; defining ANGELICA_VERSION as 99999999", raw);
             return "99999999";
         }
+        final int major = Integer.parseInt(matcher.group(1));
+        final int minor = Integer.parseInt(matcher.group(2));
+        final int patch = Integer.parseInt(matcher.group(3));
+        final int sub = matcher.group(4) == null ? 0 : Integer.parseInt(matcher.group(4));
+        return String.format("%d%02d%02d%03d", major, minor, patch, sub);
     }
 
 	public static Iterable<StringPair> createStandardEnvironmentDefines() {
@@ -96,7 +94,7 @@ public class StandardMacros {
 			define(standardDefines, "IS_ANGELICA_SDLGPU");
 		}
 
-		if (DHCompat.isPresent()) {
+		if (DHCompat.hasRenderingEnabled()) {
 			define(standardDefines, "DISTANT_HORIZONS");
 		}
 

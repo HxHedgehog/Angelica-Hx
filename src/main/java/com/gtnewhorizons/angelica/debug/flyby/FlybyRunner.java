@@ -2,11 +2,18 @@ package com.gtnewhorizons.angelica.debug.flyby;
 
 import com.gtnewhorizons.angelica.config.SystemProperties;
 import com.gtnewhorizons.angelica.config.SystemProperties.FlybyPacing;
+import com.gtnewhorizons.angelica.debug.profiling.AsprofRecorder;
+import com.gtnewhorizons.angelica.debug.profiling.AsprofRecorder.StopResult;
+import com.gtnewhorizons.angelica.debug.profiling.AsprofRecorder.StopStatus;
 import com.gtnewhorizons.angelica.glsm.GLStateManager;
 import com.gtnewhorizons.angelica.glsm.backend.VSyncMode;
 import com.gtnewhorizons.angelica.glsm.profiling.Tracy;
+import com.gtnewhorizons.angelica.glsm.profiling.DebugCounters;
 import com.gtnewhorizons.angelica.rendering.FpsReducer;
 import com.gtnewhorizons.angelica.rendering.FramePacer;
+import com.gtnewhorizons.angelica.rendering.IsbrhTestRenderer;
+import com.sun.management.OperatingSystemMXBean;
+import com.sun.management.ThreadMXBean;
 import cpw.mods.fml.common.eventhandler.SubscribeEvent;
 import cpw.mods.fml.common.gameevent.TickEvent;
 import net.minecraft.client.Minecraft;
@@ -17,8 +24,11 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.util.ChatComponentText;
 import net.minecraft.util.ChunkCoordinates;
 import net.minecraft.util.EnumChatFormatting;
+import net.minecraft.util.IChatComponent;
 import net.minecraft.util.MathHelper;
+import net.minecraft.util.ScreenShotHelper;
 import net.minecraft.world.MinecraftException;
+import net.minecraft.world.World;
 import net.minecraft.world.WorldServer;
 import net.minecraft.world.chunk.Chunk;
 import net.minecraft.world.chunk.IChunkProvider;
@@ -26,6 +36,8 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.lwjgl.opengl.Display;
 
+import java.lang.management.GarbageCollectorMXBean;
+import java.lang.management.ManagementFactory;
 import java.util.Arrays;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicReference;
@@ -58,6 +70,10 @@ public final class FlybyRunner {
     private boolean waitForFocus;
     private boolean exitWhenDone;
     private boolean startedFromProperties;
+    private boolean armed;
+    private int waitTicks;
+    private boolean jfr;
+    private long recordingId;
     private final AtomicReference<FlybyRequest> pendingRequest = new AtomicReference<>();
     private FlybyRequest activeRequest;
     private String[] sceneCommands = NO_COMMANDS;
@@ -66,12 +82,20 @@ public final class FlybyRunner {
     private boolean pauseOnLostFocusSaved;
     private boolean pauseOnLostFocusOverridden;
     private boolean vsyncOverridden;
+    private boolean showDebugInfoSaved;
+    private boolean showDebugInfoOverridden;
+    private int cameraSaved;
+    private boolean cameraOverridden;
+    private int shotEvery;
+    private int nextShot;
+    private int shot;
 
     private static volatile boolean sceneGuarded;
     private static volatile boolean worldChangesDiscarded;
 
     private double parkedX, parkedY, parkedZ;
     private float parkedYaw, parkedPitch;
+    private float flightPitch;
     private double originX, originZ;
     private float originYaw;
     private FlybyOrigin fixedOrigin;
@@ -93,11 +117,23 @@ public final class FlybyRunner {
     private long legSection;
 
     private long[] frameTimesNs = NO_FRAMES;
+    private long[] frameAllocBytes = NO_FRAMES;
+    private long lastAllocBytes;
+    private long gcCountStart;
+    private long gcTimeStart;
+    private long cpuClientStartNs;
+    private long cpuProcessStartNs;
+    private long fenceWaitStartNs;
+    private long transferWaitStartNs;
+    private long presentsStart;
+    private long emptyAcquiresStart;
+    private long allocClientStart;
+    private long allocProcessStart;
     private int frameCount;
     private final int[] phaseStartFrame = new int[64];
     private final int[] phaseKey = new int[64];
     private int phaseCount;
-    private boolean framesTruncated;
+    private int framesSeen;
     private long lastFrameNs;
     private long runStartNs;
 
@@ -133,15 +169,20 @@ public final class FlybyRunner {
         this.start(configured, SystemProperties.FLYBY_LENGTH, SystemProperties.FLYBY_WARMUP_TICKS, SystemProperties.FLYBY_SPEED);
         this.fixedOrigin = origin;
         this.waitForTracy = SystemProperties.FLYBY_WAIT_FOR_TRACY;
+        if (this.waitForTracy && !Tracy.ENABLED) {
+            LOGGER.warn("Flyby: waitForTracy requested but Tracy is disabled in this build");
+            this.waitForTracy = false;
+        }
         this.waitForFocus = SystemProperties.FLYBY_WAIT_FOR_FOCUS;
         this.exitWhenDone = SystemProperties.FLYBY_EXIT_WHEN_DONE;
+        this.jfr = SystemProperties.FLYBY_JFR;
         if (!SystemProperties.FLYBY_COMMANDS.isEmpty()) {
             this.sceneCommands = FlybyScene.load(SystemProperties.FLYBY_COMMANDS);
             LOGGER.info("Flyby scene '{}': {} commands", SystemProperties.FLYBY_COMMANDS, this.sceneCommands.length);
         }
-        LOGGER.info("Flyby started from properties: route={} warmup={} length={} {} ({} ticks) waitForTracy={} waitForFocus={} exitWhenDone={}",
+        LOGGER.info("Flyby started from properties: route={} warmup={} length={} {} ({} ticks) waitForTracy={} waitForFocus={} exitWhenDone={} jfr={}",
             configured.id(), this.warmupTicks, this.runLength, configured.lengthUnit(), this.runTicks,
-            this.waitForTracy, this.waitForFocus, this.exitWhenDone);
+            this.waitForTracy, this.waitForFocus, this.exitWhenDone, this.jfr);
     }
 
     public void start(FlybyRoute route, int length, int warmupTicks, double speed) {
@@ -152,10 +193,12 @@ public final class FlybyRunner {
         this.warmupTicks = Math.max(0, warmupTicks);
         this.tick = 0;
         this.frameCount = 0;
-        this.framesTruncated = false;
+        this.framesSeen = 0;
         this.waitForTracy = false;
         this.waitForFocus = false;
         this.exitWhenDone = false;
+        this.jfr = false;
+        this.armed = false;
         this.fixedOrigin = null;
         sceneGuarded = false;
         this.state = State.WAITING;
@@ -185,6 +228,11 @@ public final class FlybyRunner {
             return;
         }
 
+        if (mc.theWorld == null && this.armed) {
+            this.restorePauseOnLostFocus(mc);
+            this.armed = false;
+        }
+
         if (this.state == State.EXITING) {
             if (++this.tick >= EXIT_TICKS) {
                 this.state = State.DONE;
@@ -196,10 +244,25 @@ public final class FlybyRunner {
         final EntityClientPlayerMP player = mc.thePlayer;
         if (player == null || mc.theWorld == null) return;
 
+        pinClientWeather(mc.theWorld);
+
         switch (this.state) {
             case WAITING -> {
-                if (this.waitForTracy && !Tracy.isConnected()) return;
-                if (this.waitForFocus && !Display.isActive()) return;
+                if (!this.armed) {
+                    this.armed = true;
+                    this.waitTicks = 0;
+                    this.overridePauseOnLostFocus(mc);
+                }
+                if (mc.currentScreen != null) mc.displayGuiScreen(null);
+
+                if (this.waitForTracy && !Tracy.isConnected()) {
+                    if (this.waitTicks++ % 100 == 0) LOGGER.info("Flyby waiting for Tracy connection");
+                    return;
+                }
+                if (this.waitForFocus && !Display.isActive()) {
+                    if (this.waitTicks++ % 100 == 0) LOGGER.info("Flyby waiting for window focus");
+                    return;
+                }
                 this.begin(mc, player);
             }
             case PREPARING -> {
@@ -210,6 +273,17 @@ public final class FlybyRunner {
             }
             case WARMUP -> {
                 this.applyPosition(player, 0);
+                if (this.jfr && this.tick == Math.max(0, this.warmupTicks - 40)) {
+                    final String error;
+                    synchronized (AsprofRecorder.class) {
+                        error = AsprofRecorder.start(this.route.id(), SystemProperties.PROFILE_OPTS);
+                        if (error == null) this.recordingId = AsprofRecorder.recordingId();
+                    }
+                    if (error != null) {
+                        LOGGER.warn("Flyby: failed to start async-profiler: {}", error);
+                        player.addChatMessage(new ChatComponentText(EnumChatFormatting.RED + "[Angelica] Flyby: failed to start async-profiler: " + error));
+                    }
+                }
                 if (++this.tick >= this.warmupTicks) {
                     this.tick = 0;
                     this.beginMeasuring(mc);
@@ -237,31 +311,45 @@ public final class FlybyRunner {
         if (event.phase != TickEvent.Phase.END || this.state != State.RUNNING) return;
 
         final long now = System.nanoTime();
+        final long alloc = AllocBean.allocatedBytes();
         if (this.lastFrameNs != 0L) {
             if (this.frameCount < this.frameTimesNs.length) {
+                this.frameAllocBytes[this.frameCount] = alloc >= 0L && this.lastAllocBytes >= 0L ? alloc - this.lastAllocBytes : -1L;
                 this.frameTimesNs[this.frameCount++] = now - this.lastFrameNs;
-            } else {
-                this.framesTruncated = true;
             }
+            this.framesSeen++;
         }
         this.lastFrameNs = now;
+        this.lastAllocBytes = alloc;
+
+        if (this.shot < SystemProperties.FLYBY_SCREENSHOTS && this.tick >= this.nextShot) {
+            final Minecraft mc = Minecraft.getMinecraft();
+            final IChatComponent result = ScreenShotHelper.saveScreenshot(mc.mcDataDir, "flyby-shot-" + this.shot + ".png", mc.displayWidth, mc.displayHeight, mc.getFramebuffer());
+            LOGGER.info("Flyby screenshot {}", result.getUnformattedText());
+            this.shot++;
+            this.nextShot += this.shotEvery;
+        }
+    }
+
+    private void overridePauseOnLostFocus(Minecraft mc) {
+        if (this.pauseOnLostFocusOverridden) return;
+        this.pauseOnLostFocusSaved = mc.gameSettings.pauseOnLostFocus;
+        this.pauseOnLostFocusOverridden = true;
+        mc.gameSettings.pauseOnLostFocus = false;
     }
 
     private void begin(Minecraft mc, EntityClientPlayerMP player) {
         if (mc.currentScreen != null) {
             mc.displayGuiScreen(null);
         }
-        if (!this.pauseOnLostFocusOverridden) {
-            this.pauseOnLostFocusSaved = mc.gameSettings.pauseOnLostFocus;
-            this.pauseOnLostFocusOverridden = true;
-            mc.gameSettings.pauseOnLostFocus = false;
-        }
+        this.overridePauseOnLostFocus(mc);
 
         this.parkedX = player.posX;
         this.parkedY = player.posY;
         this.parkedZ = player.posZ;
         this.parkedYaw = player.rotationYaw;
         this.parkedPitch = player.rotationPitch;
+        this.flightPitch = Float.isNaN(SystemProperties.FLYBY_PITCH) ? this.parkedPitch : SystemProperties.FLYBY_PITCH;
         this.eyeOffset = player.yOffset;
 
         final boolean creative = player.capabilities.isCreativeMode;
@@ -284,6 +372,19 @@ public final class FlybyRunner {
 
         this.buildPath();
         this.suppressPacing();
+        if (SystemProperties.FLYBY_DEBUG_HUD && !this.showDebugInfoOverridden) {
+            this.showDebugInfoSaved = mc.gameSettings.showDebugInfo;
+            this.showDebugInfoOverridden = true;
+            mc.gameSettings.showDebugInfo = true;
+        }
+        if (!this.cameraOverridden) {
+            this.cameraSaved = mc.gameSettings.thirdPersonView;
+            this.cameraOverridden = true;
+            mc.gameSettings.thirdPersonView = SystemProperties.FLYBY_CAMERA.ordinal();
+        }
+        if ("isbrh".equals(SystemProperties.FLYBY_CRASH_TEST)) {
+            IsbrhTestRenderer.armCrashTest();
+        }
 
         this.tick = 0;
         if (mc.getIntegratedServer() != null) {
@@ -418,14 +519,30 @@ public final class FlybyRunner {
         this.plotLeg = Tracy.plotHandle("flyby.leg");
         this.plotTurning = Tracy.plotHandle("flyby.turning");
         this.lastPhase = -1;
-        this.frameTimesNs = new long[Math.min(MAX_RECORDED_FRAMES, Math.max(1024, this.runTicks * 20))];
+        this.frameTimesNs = new long[Math.min(MAX_RECORDED_FRAMES, Math.max(1024, this.runTicks * 50))];
+        this.frameAllocBytes = new long[this.frameTimesNs.length];
+        this.lastAllocBytes = -1L;
+        this.gcCountStart = gcCount();
+        this.gcTimeStart = gcTimeMs();
+        this.cpuClientStartNs = clientCpuNs();
+        this.cpuProcessStartNs = processCpuNs();
+        this.fenceWaitStartNs = DebugCounters.FENCE_WAIT_NANOS.sum();
+        this.transferWaitStartNs = DebugCounters.TRANSFER_WAIT_NANOS.sum();
+        this.presentsStart = DebugCounters.PRESENTS.sum();
+        this.emptyAcquiresStart = DebugCounters.EMPTY_ACQUIRES.sum();
+        this.allocClientStart = AllocBean.allocatedBytes();
+        this.allocProcessStart = AllocBean.totalAllocatedBytes();
         this.frameCount = 0;
+        this.framesSeen = 0;
         this.phaseCount = 0;
         this.lastFrameNs = 0L;
         this.runStartNs = System.nanoTime();
+        this.shot = 0;
+        this.shotEvery = SystemProperties.FLYBY_SCREENSHOTS > 0 ? this.runTicks / SystemProperties.FLYBY_SCREENSHOTS : 0;
+        this.nextShot = this.shotEvery / 2;
         FramePacer.beginStats();
 
-        final String config = "backend=" + GLStateManager.getRenderBackendName() + " pacing=" + SystemProperties.FLYBY_PACING + " vsync=" + GLStateManager.getEffectiveVSyncMode() + " discard=" + (mc.getIntegratedServer() != null);
+        final String config = "backend=" + GLStateManager.getRenderBackendName() + " pacing=" + SystemProperties.FLYBY_PACING + " vsync=" + GLStateManager.getEffectiveVSyncMode() + " discard=" + (mc.getIntegratedServer() != null) + " camera=" + SystemProperties.FLYBY_CAMERA;
         if (Tracy.ENABLED) {
             Tracy.message("flyby start route=" + this.route.id() + " length=" + this.runLength + this.route.lengthUnit() + " speed=" + this.route.speedOr(this.speed) + "b/t ticks=" + this.runTicks + " " + config);
         }
@@ -446,7 +563,7 @@ public final class FlybyRunner {
         player.prevPosZ = player.lastTickPosZ = this.pathZ[last];
         player.prevRotationYaw = player.rotationYaw = this.pathYaw[last];
         player.prevRotationYawHead = player.rotationYawHead = this.pathYaw[last];
-        player.prevRotationPitch = player.rotationPitch = this.parkedPitch;
+        player.prevRotationPitch = player.rotationPitch = this.flightPitch;
         player.setPosition(this.pathX[last], this.flightY, this.pathZ[last]);
     }
 
@@ -474,7 +591,7 @@ public final class FlybyRunner {
         player.rotationYaw = yaw;
         player.prevRotationYawHead = prevYaw;
         player.rotationYawHead = yaw;
-        player.prevRotationPitch = player.rotationPitch = this.parkedPitch;
+        player.prevRotationPitch = player.rotationPitch = this.flightPitch;
 
         player.setPosition(x, this.flightY, z);
     }
@@ -523,6 +640,13 @@ public final class FlybyRunner {
         server.getConfigurationManager().sendChatMsg(new ChatComponentText(EnumChatFormatting.AQUA + "[Angelica] " + EnumChatFormatting.WHITE + "Flyby: world saving is off until you leave this world"));
     }
 
+
+    private static void pinClientWeather(World world) {
+        final SystemProperties.FlybyWeather weather = SystemProperties.FLYBY_WEATHER;
+        world.rainingStrength = world.prevRainingStrength = weather.isRaining() ? 1.0f : 0.0f;
+        world.thunderingStrength = world.prevThunderingStrength = weather.isThundering() ? 1.0f : 0.0f;
+    }
+
     private void applyFreeze(MinecraftServer server) {
         for (WorldServer world : server.worldServers) {
             if (world == null) continue;
@@ -531,13 +655,17 @@ public final class FlybyRunner {
                 world.getGameRules().setOrCreateGameRule("doDaylightCycle", "false");
                 LOGGER.warn("Flyby: doDaylightCycle was on, disabled it");
             }
-            if (world.getWorldInfo().isRaining() || world.getWorldInfo().isThundering()) {
-                LOGGER.warn("Flyby: weather was active, clearing it");
-                world.getWorldInfo().setRaining(false);
-                world.getWorldInfo().setThundering(false);
+            final SystemProperties.FlybyWeather weather = SystemProperties.FLYBY_WEATHER;
+            if (world.getWorldInfo().isRaining() != weather.isRaining()
+                || world.getWorldInfo().isThundering() != weather.isThundering()) {
+                LOGGER.warn("Flyby: forcing weather to {}", weather);
+                world.getWorldInfo().setRaining(weather.isRaining());
+                world.getWorldInfo().setThundering(weather.isThundering());
             }
             world.getWorldInfo().setRainTime(Integer.MAX_VALUE);
             world.getWorldInfo().setThunderTime(Integer.MAX_VALUE);
+            world.rainingStrength = world.prevRainingStrength = weather.isRaining() ? 1.0f : 0.0f;
+            world.thunderingStrength = world.prevThunderingStrength = weather.isThundering() ? 1.0f : 0.0f;
 
             if (world.getWorldTime() % 24000L != SystemProperties.FLYBY_TIME_OF_DAY) {
                 LOGGER.info("Flyby: freezing time at {}", SystemProperties.FLYBY_TIME_OF_DAY);
@@ -591,8 +719,10 @@ public final class FlybyRunner {
 
         this.clearScene(server);
 
-        final FlybyCommandSender sender = new FlybyCommandSender(player, new ChunkCoordinates(MathHelper.floor_double(request.originX()), MathHelper.floor_double(feetY + 0.5D), MathHelper.floor_double(request.originZ())));
-        for (String line : this.sceneCommands) {
+        final ChunkCoordinates anchor = new ChunkCoordinates(MathHelper.floor_double(request.originX()), MathHelper.floor_double(feetY + 0.5D), MathHelper.floor_double(request.originZ()));
+        final FlybyCommandSender sender = new FlybyCommandSender(player, anchor);
+        for (String raw : this.sceneCommands) {
+            final String line = FlybyScene.expand(raw, anchor.posX, anchor.posY, anchor.posZ);
             if (server.getCommandManager().executeCommand(sender, line) == 0) {
                 LOGGER.warn("flyby scene command did not execute: {}", line);
             }
@@ -629,15 +759,36 @@ public final class FlybyRunner {
         this.legSection = 0L;
         Tracy.sectionLeave(this.runSection);
         this.runSection = 0L;
-        if (Tracy.ENABLED) Tracy.message("flyby end route=" + this.route.id() + " frames=" + this.frameCount);
+        if (Tracy.ENABLED) Tracy.message("flyby end route=" + this.route.id() + " frames=" + this.framesSeen);
 
         final String summary = this.summarise(elapsedNs, player);
         LOGGER.info(summary);
         LOGGER.info(FramePacer.endStats());
+        if (mc.gameSettings.thirdPersonView != SystemProperties.FLYBY_CAMERA.ordinal()) {
+            LOGGER.warn("Flyby: camera left {} during the run (thirdPersonView={}), screenshots are not comparable", SystemProperties.FLYBY_CAMERA, mc.gameSettings.thirdPersonView);
+        }
         if (mc.thePlayer != null) {
             mc.thePlayer.addChatMessage(new ChatComponentText(EnumChatFormatting.AQUA + "[Angelica] " + EnumChatFormatting.WHITE + summary));
         }
 
+        this.stopRecording(mc);
+    }
+
+    private void stopRecording(Minecraft mc) {
+        final long ownedId = this.recordingId;
+        this.recordingId = 0;
+        final StopResult result = AsprofRecorder.stopIfRecording(ownedId);
+        if (result.status() == StopStatus.NO_MATCH) return;
+        final boolean failed = result.status() == StopStatus.FAILED;
+        final String message = failed ? "Flyby: failed to stop async-profiler: " + result.error()
+            : "Flyby: profile written to " + result.path();
+        if (failed) LOGGER.warn(message);
+        else LOGGER.info(message);
+        if (mc.thePlayer != null) {
+            mc.thePlayer.addChatMessage(new ChatComponentText((failed ? EnumChatFormatting.RED : EnumChatFormatting.AQUA)
+                + "[Angelica] " + message));
+        }
+        if (Tracy.ENABLED) Tracy.message(message);
     }
 
     private void teardown(Minecraft mc, EntityClientPlayerMP player) {
@@ -645,6 +796,9 @@ public final class FlybyRunner {
 
         this.returnToOrigin(player);
         this.restorePauseOnLostFocus(mc);
+        this.restoreShowDebugInfo(mc);
+        this.restoreCamera(mc);
+        this.armed = false;
         sceneGuarded = false;
         this.sceneClearRequested = this.sceneCommands.length > 0;
         this.restorePacing(mc);
@@ -654,6 +808,7 @@ public final class FlybyRunner {
     }
 
     private void exitGame(Minecraft mc) {
+        this.stopRecording(mc);
         LOGGER.info("Flyby complete, shutting down.");
         if (mc.theWorld != null) {
             mc.theWorld.sendQuittingDisconnectingPacket();
@@ -669,6 +824,18 @@ public final class FlybyRunner {
         this.pauseOnLostFocusOverridden = false;
     }
 
+    private void restoreShowDebugInfo(Minecraft mc) {
+        if (!this.showDebugInfoOverridden) return;
+        mc.gameSettings.showDebugInfo = this.showDebugInfoSaved;
+        this.showDebugInfoOverridden = false;
+    }
+
+    private void restoreCamera(Minecraft mc) {
+        if (!this.cameraOverridden) return;
+        mc.gameSettings.thirdPersonView = this.cameraSaved;
+        this.cameraOverridden = false;
+    }
+
     private void returnToOrigin(EntityClientPlayerMP player) {
         player.motionX = 0.0D;
         player.motionY = 0.0D;
@@ -682,13 +849,28 @@ public final class FlybyRunner {
     }
 
     private String summarise(long elapsedNs, EntityClientPlayerMP player) {
+        final long allocClientEnd = AllocBean.allocatedBytes();
+        final long allocProcessEnd = AllocBean.totalAllocatedBytes();
         final StringBuilder sb = new StringBuilder(192);
         sb.append("Flyby ").append(this.route.id())
-          .append(": ").append(this.frameCount).append(" frames in ")
+          .append(": ").append(this.framesSeen).append(" frames in ")
           .append(String.format("%.2fs", elapsedNs / 1_000_000_000.0D));
 
-        if (this.frameCount > 0) appendFrameStats(sb, 0, this.frameCount);
-        if (this.framesTruncated) sb.append(" (frame samples truncated)");
+        if (this.frameCount > 0) {
+            appendFrameStats(sb, 0, this.frameCount);
+            appendAllocStats(sb, allocClientEnd, allocProcessEnd);
+        }
+        sb.append(", gc ").append(gcCount() - this.gcCountStart).append(" collections ").append(gcTimeMs() - this.gcTimeStart).append("ms");
+        appendCpuStats(sb);
+        if (this.framesSeen > 0) {
+            sb.append(String.format(", wait fence %.4fms/frame, transfer %.4fms/frame",
+                (DebugCounters.FENCE_WAIT_NANOS.sum() - this.fenceWaitStartNs) / (double) this.framesSeen / 1e6D,
+                (DebugCounters.TRANSFER_WAIT_NANOS.sum() - this.transferWaitStartNs) / (double) this.framesSeen / 1e6D));
+            sb.append(String.format(", presents %d, empty acquires %d",
+                DebugCounters.PRESENTS.sum() - this.presentsStart,
+                DebugCounters.EMPTY_ACQUIRES.sum() - this.emptyAcquiresStart));
+        }
+        if (this.framesSeen > this.frameCount) sb.append(" (frame samples truncated)");
         for (int i = 0; i < this.phaseCount; i++) {
             final int from = this.phaseStartFrame[i];
             final int to = i + 1 < this.phaseCount ? this.phaseStartFrame[i + 1] : this.frameCount;
@@ -714,6 +896,82 @@ public final class FlybyRunner {
             sorted[n - 1] / 1e6D));
     }
 
+    private void appendAllocStats(StringBuilder sb, long clientEnd, long processEnd) {
+        if (this.allocClientStart < 0L || clientEnd < 0L) {
+            sb.append(", alloc unavailable");
+            return;
+        }
+        final long total = clientEnd - this.allocClientStart;
+        sb.append(String.format(", alloc client avg %.0fB/frame, total %.1fMB", total / (double) this.framesSeen, total / 1048576.0D));
+        final long[] sorted = Arrays.copyOf(this.frameAllocBytes, this.frameCount);
+        Arrays.sort(sorted);
+        int first = 0;
+        while (first < sorted.length && sorted[first] < 0L) first++;
+        final int n = sorted.length - first;
+        if (n > 0) sb.append(String.format(", p50 %dB, p99 %dB", sorted[first + n / 2], sorted[first + Math.min(n - 1, (int) (n * 0.99D))]));
+        if (this.allocProcessStart >= 0L && processEnd >= 0L) {
+            sb.append(String.format(", alloc process %.0fB/frame", (processEnd - this.allocProcessStart) / (double) this.framesSeen));
+        }
+    }
+
+    private void appendCpuStats(StringBuilder sb) {
+        final long client = clientCpuNs();
+        final long process = processCpuNs();
+        if (this.framesSeen == 0 || this.cpuClientStartNs < 0L || this.cpuProcessStartNs < 0L || client < 0L || process < 0L) {
+            sb.append(", cpu unavailable");
+            return;
+        }
+        sb.append(String.format(", cpu client %.3fms/frame, process %.3fms/frame",
+            (client - this.cpuClientStartNs) / (double) this.framesSeen / 1e6D,
+            (process - this.cpuProcessStartNs) / (double) this.framesSeen / 1e6D));
+    }
+
+    private static long clientCpuNs() {
+        final var bean = ManagementFactory.getThreadMXBean();
+        return bean.isCurrentThreadCpuTimeSupported() ? bean.getCurrentThreadCpuTime() : -1L;
+    }
+
+    private static long processCpuNs() {
+        return ManagementFactory.getOperatingSystemMXBean() instanceof OperatingSystemMXBean os ? os.getProcessCpuTime() : -1L;
+    }
+
+    private static long gcCount() {
+        long total = 0L;
+        for (GarbageCollectorMXBean gc : ManagementFactory.getGarbageCollectorMXBeans()) total += Math.max(0L, gc.getCollectionCount());
+        return total;
+    }
+
+    private static long gcTimeMs() {
+        long total = 0L;
+        for (GarbageCollectorMXBean gc : ManagementFactory.getGarbageCollectorMXBeans()) total += Math.max(0L, gc.getCollectionTime());
+        return total;
+    }
+
+    private static final class AllocBean {
+        static final ThreadMXBean BEAN;
+        static final boolean TOTAL;
+        static {
+            ThreadMXBean bean = null;
+            boolean total = false;
+            try {
+                if (ManagementFactory.getThreadMXBean() instanceof ThreadMXBean sun && sun.isThreadAllocatedMemorySupported()) {
+                    bean = sun;
+                    total = sun.getTotalThreadAllocatedBytes() >= 0L;
+                }
+            } catch (Throwable ignored) {}
+            BEAN = bean;
+            TOTAL = total;
+        }
+
+        static long allocatedBytes() {
+            return BEAN == null ? -1L : BEAN.getCurrentThreadAllocatedBytes();
+        }
+
+        static long totalAllocatedBytes() {
+            return TOTAL ? BEAN.getTotalThreadAllocatedBytes() : -1L;
+        }
+    }
+
     public void cancel() {
         if (this.isActive()) {
             LOGGER.info("Flyby cancelled");
@@ -727,6 +985,10 @@ public final class FlybyRunner {
             FramePacer.endStats();
             final Minecraft mc = Minecraft.getMinecraft();
             this.restorePauseOnLostFocus(mc);
+            this.restoreShowDebugInfo(mc);
+            this.restoreCamera(mc);
+            this.armed = false;
+            this.stopRecording(mc);
             this.pendingRequest.set(null);
             this.activeRequest = null;
             sceneGuarded = false;

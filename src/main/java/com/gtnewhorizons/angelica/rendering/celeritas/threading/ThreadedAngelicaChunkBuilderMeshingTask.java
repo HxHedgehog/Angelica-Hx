@@ -94,8 +94,16 @@ public class ThreadedAngelicaChunkBuilderMeshingTask extends AngelicaChunkBuilde
     @Override
     protected boolean canRenderOffThread(Block block) {
         final int renderType = block.getRenderType();
-        return (renderType >= 0 && renderType <= MAX_VANILLA_RENDER_TYPE)
-            || AngelicaBlockSafetyRegistry.canBlockRenderOffThread(block, true, true);
+        return renderType == -1 || (renderType >= 0 && renderType <= MAX_VANILLA_RENDER_TYPE) || AngelicaBlockSafetyRegistry.canBlockRenderOffThread(block);
+    }
+
+    @Override
+    protected boolean canHandOff() {
+        return renderContext != null;
+    }
+
+    public void releaseUnstartedContext() {
+        if (this.renderContext != null) this.renderContext.release();
     }
 
     @Override

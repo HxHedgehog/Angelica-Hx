@@ -93,6 +93,10 @@ DependencyHandlerScope.of(dependencies).apply {
     shadowImplementation(project(":lwjgl3-backend")) { isTransitive = false }
     shadowImplementation(project(":sdl-gpu")) { isTransitive = false }
     runtimeOnlyNonPublishable(project(":tracy-client")) { isTransitive = false }
+    if (System.getProperty("os.name").lowercase().contains("mac")) {
+        runtimeOnlyNonPublishable(project(":moltenvk")) { isTransitive = false }
+    }
+    devOnlyNonPublishable(libs.async.profiler)
     shadowImplementation(libs.eventbus)
 
     shadowImplementation(libs.jcpp) // Apache 2.0
@@ -161,6 +165,7 @@ DependencyHandlerScope.of(dependencies).apply {
     compileOnly(rfg.deobf("curse.maven:security-craft-64760:2818228"))
     compileOnly("ganymedes01.etfuturum:Et-Futurum-Requiem:2.6.49-GTNH:dev")
     compileOnly("com.github.GTNewHorizons:OpenBlocks:1.12.19-GTNH:dev")
+    compileOnly("com.github.GTNewHorizons:Draconic-Evolution:1.5.30-GTNH:dev")
     compileOnly("com.github.GTNewHorizons:Chisel:2.17.31-GTNH:dev")
     compileOnly(rfg.deobf("curse.maven:biomes-o-plenty-220318:2499612"))
 
@@ -200,6 +205,7 @@ afterEvaluate {
         testImplementation(libs.junit.platform.launcher)
 
         testImplementation(libs.archunit.junit5)
+        testImplementation(libs.retrofuturabootstrap) { isTransitive = false }
 
         glsmTestFixtures(testFixtures(project(":glsm")) as ModuleDependency) { isTransitive = false }
         testCompileOnly(testFixtures(project(":glsm")))

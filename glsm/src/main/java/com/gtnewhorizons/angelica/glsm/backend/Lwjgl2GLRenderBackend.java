@@ -1,6 +1,7 @@
 package com.gtnewhorizons.angelica.glsm.backend;
 
 import com.gtnewhorizons.angelica.glsm.GLStateManager;
+import com.gtnewhorizons.angelica.glsm.RenderSystem;
 import org.lwjgl.BufferUtils;
 import org.lwjgl.opengl.AMDDebugOutput;
 import org.lwjgl.opengl.AMDDebugOutputCallback;
@@ -23,6 +24,7 @@ import org.lwjgl.opengl.GL20;
 import org.lwjgl.opengl.GL30;
 import org.lwjgl.opengl.GL31;
 import org.lwjgl.opengl.GL40;
+import org.lwjgl.opengl.GL41;
 import org.lwjgl.opengl.GL32;
 import org.lwjgl.opengl.GL33;
 import org.lwjgl.opengl.GL42;
@@ -653,6 +655,11 @@ public final class Lwjgl2GLRenderBackend extends RenderBackend {
     }
 
     @Override
+    public void readPixels(int x, int y, int width, int height, int format, int type, long pixelBufferOffset) {
+        GL11.glReadPixels(x, y, width, height, format, type, pixelBufferOffset);
+    }
+
+    @Override
     public void getTexImage(int target, int level, int format, int type, ByteBuffer pixels) {
         GL11.glGetTexImage(target, level, format, type, pixels);
     }
@@ -800,6 +807,28 @@ public final class Lwjgl2GLRenderBackend extends RenderBackend {
     @Override
     public boolean isProgram(int obj) {
         return GL20.glIsProgram(obj);
+    }
+
+    @Override
+    public boolean supportsProgramBinary() {
+        final ContextCapabilities caps = GLStateManager.capabilities;
+        return !RenderSystem.isGLES() && (caps.OpenGL41 || caps.GL_ARB_get_program_binary)
+            && GL11.glGetInteger(GL41.GL_NUM_PROGRAM_BINARY_FORMATS) > 0;
+    }
+
+    @Override
+    public void programParameteri(int program, int pname, int value) {
+        GL41.glProgramParameteri(program, pname, value);
+    }
+
+    @Override
+    public void getProgramBinary(int program, IntBuffer length, IntBuffer binaryFormat, ByteBuffer binary) {
+        GL41.glGetProgramBinary(program, length, binaryFormat, binary);
+    }
+
+    @Override
+    public void programBinary(int program, int binaryFormat, ByteBuffer binary) {
+        GL41.glProgramBinary(program, binaryFormat, binary);
     }
 
     @Override
@@ -1247,31 +1276,6 @@ public final class Lwjgl2GLRenderBackend extends RenderBackend {
     @Override
     public void texStorage2D(int target, int levels, int internalFormat, int width, int height) {
         GL42.glTexStorage2D(target, levels, internalFormat, width, height);
-    }
-
-    @Override
-    public void textureStorage2D(int texture, int levels, int internalFormat, int width, int height) {
-        ARBDirectStateAccess.glTextureStorage2D(texture, levels, internalFormat, width, height);
-    }
-
-    @Override
-    public void texStorage1D(int target, int levels, int internalFormat, int width) {
-        GL42.glTexStorage1D(target, levels, internalFormat, width);
-    }
-
-    @Override
-    public void texStorage3D(int target, int levels, int internalFormat, int width, int height, int depth) {
-        GL42.glTexStorage3D(target, levels, internalFormat, width, height, depth);
-    }
-
-    @Override
-    public void textureStorage1D(int texture, int levels, int internalFormat, int width) {
-        ARBDirectStateAccess.glTextureStorage1D(texture, levels, internalFormat, width);
-    }
-
-    @Override
-    public void textureStorage3D(int texture, int levels, int internalFormat, int width, int height, int depth) {
-        ARBDirectStateAccess.glTextureStorage3D(texture, levels, internalFormat, width, height, depth);
     }
 
     @Override

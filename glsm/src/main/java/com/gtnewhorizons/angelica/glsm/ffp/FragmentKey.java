@@ -2,8 +2,10 @@ package com.gtnewhorizons.angelica.glsm.ffp;
 
 import java.util.Arrays;
 
+import com.gtnewhorizons.angelica.glsm.GLContextState;
 import com.gtnewhorizons.angelica.glsm.GLStateManager;
 import com.gtnewhorizons.angelica.glsm.states.TexEnvState;
+import com.gtnewhorizons.angelica.glsm.states.TextureUnitArray;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL12;
 import org.lwjgl.opengl.GL13;
@@ -64,6 +66,8 @@ public final class FragmentKey {
     public static final int FOG_EXP2   = 3;
 
     private static final int GLOBAL_BITS = 14;
+    private static final int BIT_COMBINED_GLINT = 61;
+    private static final int BIT_GLINT_REPLACE_ALPHA = 62;
     private static final int BIT_FOG_MODE          = 0;  // 2 bits
     private static final int BIT_ALPHA_TEST        = 2;  // 1 bit
     private static final int BIT_ALPHA_FUNC        = 3;  // 3 bits
@@ -104,11 +108,17 @@ public final class FragmentKey {
      * @return number of significant longs (1..4)
      */
     public static int packFromState(long[] out) {
+        return packFromState(out, GLStateManager.ctx());
+    }
+
+    public static int packFromState(long[] out, GLContextState glCtx) {
         long global = 0;
+        if (CombinedGlint.isActive()) global |= 1L << BIT_COMBINED_GLINT;
+        if (CombinedGlint.replacesAlpha()) global |= 1L << BIT_GLINT_REPLACE_ALPHA;
 
         // Fog
-        if (GLStateManager.getFogMode().isEnabled()) {
-            final int fogMode = switch (GLStateManager.getFogState().getFogMode()) {
+        if (glCtx.fogMode.isEnabled()) {
+            final int fogMode = switch (glCtx.fogState.getFogMode()) {
                 case GL11.GL_LINEAR -> FOG_LINEAR;
                 case GL11.GL_EXP    -> FOG_EXP;
                 case GL11.GL_EXP2   -> FOG_EXP2;
@@ -118,39 +128,40 @@ public final class FragmentKey {
         }
 
         // Alpha test
-        if (GLStateManager.getAlphaTest().isEnabled()) {
+        if (glCtx.alphaTest.isEnabled()) {
             global |= (1L << BIT_ALPHA_TEST);
-            global |= ((long) (encodeAlphaFunc(GLStateManager.getAlphaState().getFunction()) & 0x7)) << BIT_ALPHA_FUNC;
+            global |= ((long) (encodeAlphaFunc(glCtx.alphaState.getFunction()) & 0x7)) << BIT_ALPHA_FUNC;
         }
 
         // Damage overlay
-        if (GLStateManager.ffpInstancing.hasInstanceHead()) {
+        if (glCtx.ffpInstancing.hasInstanceHead()) {
             global |= (1L << BIT_OVERLAY_INSTANCED);
-        } else if (GLStateManager.getOverlayA() != 0.0f) {
+        } else if (glCtx.overlayA != 0.0f) {
             global |= (1L << BIT_OVERLAY_ENABLED);
         }
 
-        if (GLStateManager.lineStippleActive) {
+        if (glCtx.lineStippleActive) {
             global |= (1L << BIT_LINE_STIPPLE);
         }
 
         // Separate specular / color sum
-        if (GLStateManager.getLightingState().isEnabled()
-            && GLStateManager.getLightModel().colorControl == GL12.GL_SEPARATE_SPECULAR_COLOR) {
+        if (glCtx.lightingState.isEnabled()
+            && glCtx.lightModel.colorControl == GL12.GL_SEPARATE_SPECULAR_COLOR) {
             global |= (1L << BIT_SEPARATE_SPECULAR);
-        } else if (GLStateManager.getColorSumState().isEnabled()) {
+        } else if (glCtx.colorSumState.isEnabled()) {
             global |= (1L << BIT_COLOR_SUM);
         }
 
         // Per-unit state
+        final TextureUnitArray textures = glCtx.textures;
         int highestEnabled = -1;
         long unit0Bits = 0;
         for (int i = 0; i < MAX_UNITS; i++) {
             // Per Mesa - an enabled unit with no complete texture bound counts as disabled.
-            final boolean texEnabled = GLStateManager.getTextures().getTextureUnitStates(i).isEnabled() && GLStateManager.getTextures().getTextureUnitBindings(i).getBinding() != 0;
+            final boolean texEnabled = textures.getTextureUnitStates(i).isEnabled() && textures.getTextureUnitBindings(i).getBinding() != 0;
             if (texEnabled) highestEnabled = i;
 
-            final long unitBits = packUnit(i, texEnabled);
+            final long unitBits = packUnit(i, texEnabled, textures);
             if (i == 0) {
                 unit0Bits = unitBits;
             } else {
@@ -166,10 +177,10 @@ public final class FragmentKey {
         return Math.max(1, nrEnabled);
     }
 
-    private static long packUnit(int unitIndex, boolean texEnabled) {
+    private static long packUnit(int unitIndex, boolean texEnabled, TextureUnitArray textures) {
         if (!texEnabled) return 0;
 
-        final TexEnvState envState = GLStateManager.getTextures().getTexEnvState(unitIndex);
+        final TexEnvState envState = textures.getTexEnvState(unitIndex);
         final int mode = encodeTexEnvMode(envState.mode);
 
         long bits = 1L; // enabled
@@ -241,6 +252,8 @@ public final class FragmentKey {
     }
 
     public int fogMode()              { return (int) (packed[0] & 0x3); }
+    public boolean combinedGlint()    { return (packed[0] & (1L << BIT_COMBINED_GLINT)) != 0; }
+    public boolean glintReplaceAlpha() { return (packed[0] & (1L << BIT_GLINT_REPLACE_ALPHA)) != 0; }
     public boolean alphaTestEnabled() { return ((packed[0] >> BIT_ALPHA_TEST) & 1) != 0; }
     public int alphaTestFunc()        { return (int) ((packed[0] >> BIT_ALPHA_FUNC) & 0x7); }
     public boolean separateSpecular() { return ((packed[0] >> BIT_SEPARATE_SPECULAR) & 1) != 0; }
@@ -382,7 +395,9 @@ public final class FragmentKey {
             default -> "?";
         };
         final StringBuilder sb = new StringBuilder();
-        sb.append(String.format("FFPFragmentKey[fog=%s alpha=%b(%s) specSep=%b colorSum=%b overlay=%b units=%d", fogName, alphaTestEnabled(), alphaTestEnabled() ? String.format("0x%04X", decodeAlphaFunc(alphaTestFunc())) : "-", separateSpecular(), colorSum(), overlayEnabled() || overlayInstanced(), nrEnabledUnits()));
+        sb.append(String.format("FFPFragmentKey[fog=%s alpha=%b(%s) specSep=%b colorSum=%b overlay=%b units=%d", fogName, alphaTestEnabled(),
+            alphaTestEnabled() ? String.format("0x%04X", decodeAlphaFunc(alphaTestFunc())) : "-", separateSpecular(), colorSum(),
+            overlayEnabled() || overlayInstanced(), nrEnabledUnits()));
         for (int i = 0; i < nrEnabledUnits(); i++) {
             if (!unitEnabled(i)) {
                 sb.append(String.format(" u%d=OFF", i));

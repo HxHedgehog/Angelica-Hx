@@ -8,20 +8,24 @@ import it.unimi.dsi.fastutil.objects.ObjectArrayList;
 import java.util.Locale;
 import java.util.Objects;
 
-public record PassOverride(SpecialCondition special, Boolean translucent, WorldRenderingPhase phase) {
+public final class PassOverride {
 
     public static final PassOverride NONE = new PassOverride(null, null, null);
 
     private static final ObjectArrayList<PassOverride> INTERNED = new ObjectArrayList<>();
+    private static final ObjectArrayList<Boolean> translucencyStack = new ObjectArrayList<>();
 
-    public PassOverride(SpecialCondition special, Boolean translucent) {
-        this(special, translucent, null);
+    private final SpecialCondition special;
+    private final Boolean translucent;
+    private final WorldRenderingPhase phase;
+
+    private PassOverride(SpecialCondition special, Boolean translucent, WorldRenderingPhase phase) {
+        this.special = special;
+        this.translucent = translucent;
+        this.phase = phase;
     }
 
-    public static PassOverride capture() {
-        final SpecialCondition special = GbufferPrograms.getSpecialCondition();
-        final Boolean translucent = GbufferPrograms.getDeclaredTranslucency();
-        final WorldRenderingPhase phase = GbufferPrograms.getOverridePhase();
+    public static PassOverride of(SpecialCondition special, Boolean translucent, WorldRenderingPhase phase) {
         if (special == null && translucent == null && phase == null) {
             return NONE;
         }
@@ -36,16 +40,20 @@ public record PassOverride(SpecialCondition special, Boolean translucent, WorldR
         return created;
     }
 
+    public static PassOverride capture() {
+        return of(GbufferPrograms.getSpecialCondition(), GbufferPrograms.getDeclaredTranslucency(), GbufferPrograms.getOverridePhase());
+    }
+
     public void apply() {
         GbufferPrograms.setupSpecialRenderCondition(special);
-        GbufferPrograms.setTranslucencyDeclaration(translucent);
-        GbufferPrograms.setOverridePhase(phase);
+        translucencyStack.add(GbufferPrograms.beginTranslucencyDeclaration(translucent));
+        GbufferPrograms.pushOverridePhase(phase);
     }
 
     public void clear() {
-        GbufferPrograms.setupSpecialRenderCondition(null);
-        GbufferPrograms.setTranslucencyDeclaration(null);
-        GbufferPrograms.setOverridePhase(null);
+        GbufferPrograms.popOverridePhase();
+        GbufferPrograms.endTranslucencyDeclaration(translucencyStack.pop());
+        GbufferPrograms.teardownSpecialRenderCondition();
     }
 
     public boolean isEntityPhase() {

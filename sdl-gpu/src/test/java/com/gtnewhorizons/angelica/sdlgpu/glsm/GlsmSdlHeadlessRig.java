@@ -43,7 +43,7 @@ public final class GlsmSdlHeadlessRig {
         Reflect.setStatic(SDLGPUGate.class, "engaged", true);
 
         final RenderBackend backend = BackendManager.RENDER_BACKEND;
-        assumeTrue(backend instanceof SDLGPURenderBackend, () -> "selected backend is " + backend.getName());
+        assertTrue(backend instanceof SDLGPURenderBackend, () -> "selected backend is " + backend.getName());
 
         backend.onPostWindowCreate(0L);
         Reflect.setStaticFinal(GLStateManager.class, "MainThread", Thread.class, Thread.currentThread());
@@ -51,7 +51,6 @@ public final class GlsmSdlHeadlessRig {
         GLStateManager.initialize(GLSMInitConfig.builder()
             .displaySize(SIZE, SIZE)
             .directDrawer(TessellatorStreamingDrawer::drawDirect)
-            .streamingDrawerDestroy(TessellatorStreamingDrawer::destroy)
             .build());
         GLStateManager.setRunningSplash(false);
         GLStateManager.markSplashComplete("glsmSdlHeadlessRig");
@@ -92,7 +91,7 @@ public final class GlsmSdlHeadlessRig {
         return bound.get(target);
     }
 
-    private static int colorTargetSdlFormat() {
+    static int colorTargetSdlFormat() {
         final ResourceManager rm = Reflect.get(BackendManager.RENDER_BACKEND, "resourceManager");
         final ResourceManager.TextureMeta meta = rm.getTextureMeta(colorTexture);
         return meta != null ? meta.sdlFormat() : 0;
@@ -115,6 +114,44 @@ public final class GlsmSdlHeadlessRig {
     public static void bindTarget() {
         GLStateManager.glBindFramebuffer(GL30.GL_FRAMEBUFFER, fbo);
         GLStateManager.glViewport(0, 0, SIZE, SIZE);
+    }
+
+    public static int createDepthStencilFbo() {
+        final int color = GLStateManager.glGenTextures();
+        GLStateManager.glActiveTexture(GL13.GL_TEXTURE0);
+        GLStateManager.glBindTexture(GL11.GL_TEXTURE_2D, color);
+        GLStateManager.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_NEAREST);
+        GLStateManager.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_NEAREST);
+        GLStateManager.glTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA8, SIZE, SIZE, 0, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, (ByteBuffer) null);
+
+        final int depth = GLStateManager.glGenRenderbuffers();
+        GLStateManager.glBindRenderbuffer(GL30.GL_RENDERBUFFER, depth);
+        GLStateManager.glRenderbufferStorage(GL30.GL_RENDERBUFFER, GL30.GL_DEPTH24_STENCIL8, SIZE, SIZE);
+
+        final int fbo = GLStateManager.glGenFramebuffers();
+        GLStateManager.glBindFramebuffer(GL30.GL_FRAMEBUFFER, fbo);
+        GLStateManager.glFramebufferTexture2D(GL30.GL_FRAMEBUFFER, GL30.GL_COLOR_ATTACHMENT0, GL11.GL_TEXTURE_2D, color, 0);
+        GLStateManager.glFramebufferRenderbuffer(GL30.GL_FRAMEBUFFER, GL30.GL_DEPTH_STENCIL_ATTACHMENT, GL30.GL_RENDERBUFFER, depth);
+        return fbo;
+    }
+
+    public static void writeStencilOneInBottomHalf() {
+        GLStateManager.glClearStencil(0);
+        GLStateManager.glStencilMask(0xFF);
+        GLStateManager.glClear(GL11.GL_COLOR_BUFFER_BIT | GL11.GL_DEPTH_BUFFER_BIT | GL11.GL_STENCIL_BUFFER_BIT);
+        GLStateManager.glEnable(GL11.GL_STENCIL_TEST);
+        GLStateManager.glStencilFunc(GL11.GL_ALWAYS, 1, 0xFF);
+        GLStateManager.glStencilOp(GL11.GL_KEEP, GL11.GL_KEEP, GL11.GL_REPLACE);
+        halfQuad(-1.0f, 0.0f, 0.0f, 1.0f, 0.0f);
+        GLStateManager.glDisable(GL11.GL_STENCIL_TEST);
+    }
+
+    public static void drawRedWhereStencilIsOne() {
+        GLStateManager.glEnable(GL11.GL_STENCIL_TEST);
+        GLStateManager.glStencilFunc(GL11.GL_EQUAL, 1, 0xFF);
+        GLStateManager.glStencilOp(GL11.GL_KEEP, GL11.GL_KEEP, GL11.GL_KEEP);
+        solidQuad(1.0f, 0.0f, 0.0f);
+        GLStateManager.glDisable(GL11.GL_STENCIL_TEST);
     }
 
     public static void clearTo(float r, float g, float b, float a) {
@@ -176,12 +213,24 @@ public final class GlsmSdlHeadlessRig {
         GLStateManager.glFogf(GL11.GL_FOG_END, 1.0e7f);
     }
 
-    public static int createSolidTexture(int argb) {
+    public static int newNearestTexture() {
         final int id = GLStateManager.glGenTextures();
         GLStateManager.glActiveTexture(GL13.GL_TEXTURE0);
         GLStateManager.glBindTexture(GL11.GL_TEXTURE_2D, id);
         GLStateManager.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_NEAREST);
         GLStateManager.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_NEAREST);
+        return id;
+    }
+
+    public static int fboWithColor(int texture, int level) {
+        final int fbo = GLStateManager.glGenFramebuffers();
+        GLStateManager.glBindFramebuffer(GL30.GL_FRAMEBUFFER, fbo);
+        GLStateManager.glFramebufferTexture2D(GL30.GL_FRAMEBUFFER, GL30.GL_COLOR_ATTACHMENT0, GL11.GL_TEXTURE_2D, texture, level);
+        return fbo;
+    }
+
+    public static int createSolidTexture(int argb) {
+        final int id = newNearestTexture();
         final ByteBuffer texels = MemoryUtil.memAlloc(2 * 2 * 4);
         try {
             for (int i = 0; i < 4; i++) {
@@ -276,18 +325,61 @@ public final class GlsmSdlHeadlessRig {
         try {
             for (int i = 0; i < w * h * 4; i++) pixels.put(i, fill);
             GLStateManager.glReadPixels(x, y, w, h, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, pixels);
-            final int[] out = new int[w * h];
-            for (int i = 0; i < out.length; i++) {
-                final int r = pixels.get(i * 4) & 0xFF;
-                final int g = pixels.get(i * 4 + 1) & 0xFF;
-                final int b = pixels.get(i * 4 + 2) & 0xFF;
-                final int a = pixels.get(i * 4 + 3) & 0xFF;
-                out[i] = (a << 24) | (r << 16) | (g << 8) | b;
-            }
-            return out;
+            return toArgb(pixels, w * h);
         } finally {
             MemoryUtil.memFree(pixels);
         }
+    }
+
+    public static int createSolidMipTexture(int size, int maxLevel, int argb) {
+        final int id = GLStateManager.glGenTextures();
+        GLStateManager.glActiveTexture(GL13.GL_TEXTURE0);
+        GLStateManager.glBindTexture(GL11.GL_TEXTURE_2D, id);
+        GLStateManager.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_NEAREST_MIPMAP_NEAREST);
+        GLStateManager.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_NEAREST);
+        GLStateManager.glTexParameteri(GL11.GL_TEXTURE_2D, GL12.GL_TEXTURE_MAX_LEVEL, maxLevel);
+        for (int level = 0; level <= maxLevel; level++) {
+            final int levelSize = Math.max(1, size >> level);
+            final ByteBuffer texels = MemoryUtil.memAlloc(levelSize * levelSize * 4);
+            try {
+                for (int i = 0; i < levelSize * levelSize; i++) {
+                    texels.put(i * 4, (byte) ((argb >> 16) & 0xFF));
+                    texels.put(i * 4 + 1, (byte) ((argb >> 8) & 0xFF));
+                    texels.put(i * 4 + 2, (byte) (argb & 0xFF));
+                    texels.put(i * 4 + 3, (byte) ((argb >>> 24) & 0xFF));
+                }
+                GLStateManager.glTexImage2D(GL11.GL_TEXTURE_2D, level, GL11.GL_RGBA8, levelSize, levelSize, 0, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, texels);
+            } finally {
+                MemoryUtil.memFree(texels);
+            }
+        }
+        return id;
+    }
+
+    public static int[] readTextureLevel(int texture, int level) {
+        GLStateManager.glActiveTexture(GL13.GL_TEXTURE0);
+        GLStateManager.glBindTexture(GL11.GL_TEXTURE_2D, texture);
+        final int w = GLStateManager.glGetTexLevelParameteri(GL11.GL_TEXTURE_2D, level, GL11.GL_TEXTURE_WIDTH);
+        final int h = GLStateManager.glGetTexLevelParameteri(GL11.GL_TEXTURE_2D, level, GL11.GL_TEXTURE_HEIGHT);
+        final ByteBuffer pixels = MemoryUtil.memAlloc(w * h * 4);
+        try {
+            GLStateManager.glGetTexImage(GL11.GL_TEXTURE_2D, level, GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, pixels);
+            return toArgb(pixels, w * h);
+        } finally {
+            MemoryUtil.memFree(pixels);
+        }
+    }
+
+    public static int[] toArgb(ByteBuffer pixels, int count) {
+        final int[] out = new int[count];
+        for (int i = 0; i < count; i++) {
+            final int r = pixels.get(i * 4) & 0xFF;
+            final int g = pixels.get(i * 4 + 1) & 0xFF;
+            final int b = pixels.get(i * 4 + 2) & 0xFF;
+            final int a = pixels.get(i * 4 + 3) & 0xFF;
+            out[i] = (a << 24) | (r << 16) | (g << 8) | b;
+        }
+        return out;
     }
 
     public static int pixelAt(int[] pixels, int rowStride, int x, int y) {

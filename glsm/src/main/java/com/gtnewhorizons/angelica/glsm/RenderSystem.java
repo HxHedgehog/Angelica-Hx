@@ -48,6 +48,7 @@ public class RenderSystem {
     private static boolean supportsClearTexture;
     private static boolean supportsTesselation;
     private static boolean supportsSamplerObjects;
+    private static boolean supportsProgramBinary;
     private static int maxImageUnits;
     @Getter private static int maxCombinedTextureImageUnits;
     private static int maxSSBOBindings;
@@ -159,6 +160,9 @@ public class RenderSystem {
             maxCombinedTextureImageUnits = RENDER_BACKEND.getInteger(GL20.GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS);
         }
 
+        supportsProgramBinary = RENDER_BACKEND.supportsProgramBinary();
+        GLStateManager.LOGGER.info("Program Binary: {}", supportsProgramBinary);
+
         maxGlslVersion = Integer.parseInt(parseGlVersionString(RENDER_BACKEND.getString(GL20.GL_SHADING_LANGUAGE_VERSION)));
         supportsGpuShader4 = GLStateManager.capabilities.GL_EXT_gpu_shader4;
 
@@ -169,13 +173,13 @@ public class RenderSystem {
 
         if (isGLES) {
             GLStateManager.LOGGER.info("GL ES context detected, enabling shader transformer.");
-            ShaderManager.getInstance().enable();
+            ShaderManager.enable();
         } else if (GLStateManager.capabilities.OpenGL32) {
             final int profileMask = RENDER_BACKEND.getInteger(GL32.GL_CONTEXT_PROFILE_MASK);
             if ((profileMask & GL32.GL_CONTEXT_CORE_PROFILE_BIT) != 0) {
                 coreProfile = true;
                 GLStateManager.LOGGER.info("GL 3.3 core profile detected, enabling FFP shader emulation.");
-                ShaderManager.getInstance().enable();
+                ShaderManager.enable();
             } else {
                 throw new IllegalStateException("Non-core GL context (profile mask 0x" + Integer.toHexString(profileMask)
                     + "); FFP emulation requires a core profile and nothing would render. Context creation should have rejected this.");
@@ -496,20 +500,21 @@ public class RenderSystem {
     }
 
     public static void bindTextureToUnit(int unit, int texture) {
+        if (unit != 0 && GLStateManager.getBoundTextureForServerState(unit) != texture) GLStateManager.beforeUncapturedStateChange();
         dsaState.bindTextureToUnit(unit, texture);
     }
 
     public static void bindTextureToUnit(int target, int unit, int texture) {
+        if (unit != 0 && GLStateManager.getBoundTextureForServerState(unit) != texture) GLStateManager.beforeUncapturedStateChange();
         dsaState.bindTextureToUnit(target, unit, texture);
     }
 
-    public static final FloatBuffer PROJECTION_MATRIX_BUFFER = BufferUtils.createFloatBuffer(16);
-
     public static void setupProjectionMatrix(Matrix4f matrix) {
+        final FloatBuffer projectionMatrixBuffer = GLStateManager.ctx().projectionMatrixBuffer;
         GLStateManager.glMatrixMode(GL11.GL_PROJECTION);
         GLStateManager.glPushMatrix();
-        matrix.get(0, PROJECTION_MATRIX_BUFFER);
-        GLStateManager.glLoadMatrix(PROJECTION_MATRIX_BUFFER);
+        matrix.get(0, projectionMatrixBuffer);
+        GLStateManager.glLoadMatrix(projectionMatrixBuffer);
         GLStateManager.glMatrixMode(GL11.GL_MODELVIEW);
     }
 
@@ -585,18 +590,6 @@ public class RenderSystem {
         RENDER_BACKEND.clearTexImage(texture, level, format, type);
     }
 
-    public static void textureStorage1D(int texture, int target, int levels, int internalFormat, int width) {
-        dsaState.textureStorage1D(texture, target, levels, internalFormat, width);
-    }
-
-    public static void textureStorage2D(int texture, int target, int levels, int internalFormat, int width, int height) {
-        dsaState.textureStorage2D(texture, target, levels, internalFormat, width, height);
-    }
-
-    public static void textureStorage3D(int texture, int target, int levels, int internalFormat, int width, int height, int depth) {
-        dsaState.textureStorage3D(texture, target, levels, internalFormat, width, height, depth);
-    }
-
     public static int getMaxGlslVersion() {
         return maxGlslVersion;
     }
@@ -620,6 +613,10 @@ public class RenderSystem {
 
     public static boolean supportsSamplerObjects() {
         return supportsSamplerObjects;
+    }
+
+    public static boolean supportsProgramBinary() {
+        return supportsProgramBinary;
     }
 
     public static int genSampler() {

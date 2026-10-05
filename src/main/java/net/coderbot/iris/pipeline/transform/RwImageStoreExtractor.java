@@ -52,10 +52,15 @@ public final class RwImageStoreExtractor {
     private RwImageStoreExtractor() {}
 
     public static final int VG_VBUF_SSBO_BINDING = 9;
+    public static final int VG_RANGES_SSBO_BINDING = 10;
     private static final int STRIDE_BYTES = 48;
     private static final int STRIDE_UINTS = STRIDE_BYTES / 4;
 
     private static volatile Map<String, ImageInformation> activeCustomImages = Map.of();
+
+    static Map<String, ImageInformation> activeCustomImages() {
+        return activeCustomImages;
+    }
 
     public static void setActiveCustomImages(Map<String, ImageInformation> images) {
         activeCustomImages = (images == null) ? Map.of() : Map.copyOf(images);
@@ -222,6 +227,11 @@ public final class RwImageStoreExtractor {
             final String firstArg = GlslAstHelpers.firstArgIdentifier(expr);
             if (!writtenImages.contains(firstArg)) continue;
             if (RW_CALLS.contains(fname)) {
+                final ImageDecl d = declared.get(firstArg);
+                if (d != null && !isCallTopLevelStatement(expr)) {
+                    edits.add(replaceOf(expr, scalarZeroFor(d.glslType())));
+                    continue;
+                }
                 final var stmt = GlslAstHelpers.enclosingOfType(expr, GLSLParser.StatementContext.class);
                 if (stmt != null) edits.add(replaceOf(stmt, ";"));
             } else if ("imageLoad".equals(fname)) {
@@ -371,6 +381,14 @@ public final class RwImageStoreExtractor {
         if (glslType.startsWith("iimage")) return "int";
         if (glslType.startsWith("uimage")) return "uint";
         return "float";
+    }
+
+    private static String scalarZeroFor(String glslType) {
+        return switch (scalarFor(glslType)) {
+            case "int" -> "0";
+            case "uint" -> "0u";
+            default -> "0.0";
+        };
     }
 
     private static String componentVecFor(String glslType) {
@@ -561,9 +579,12 @@ public final class RwImageStoreExtractor {
     private static void emitChunkPrelude(StringBuilder out, Set<String> writtenImages, Set<String> nonWriteonlyImages, Map<String, ImageDecl> declared, List<AttributeSlot> attrs) {
         out.append("layout(local_size_x = 64) in;\n\n");
         emitImageDecls(out, writtenImages, nonWriteonlyImages, declared);
-        out.append("\nuniform int _vg_startVertex;\n");
-        out.append("uniform int _vg_vertexCount;\n\n");
-        out.append("layout(std430, binding = ").append(VG_VBUF_SSBO_BINDING).append(") readonly buffer _VgVbuf { uint data[]; } _vg_vbuf;\n\n");
+        out.append("\nuniform int _vg_rangeBase;\n");
+        out.append("uniform int _vg_rangeCount;\n");
+        out.append("uniform int _vg_vertexTotal;\n");
+        out.append("uniform int _vg_invocationBase;\n\n");
+        out.append("layout(std430, binding = ").append(VG_VBUF_SSBO_BINDING).append(") readonly buffer _VgVbuf { uint data[]; } _vg_vbuf;\n");
+        out.append("layout(std430, binding = ").append(VG_RANGES_SSBO_BINDING).append(") readonly buffer _VgRanges { uvec2 r[]; } _vg_ranges;\n\n");
         out.append("vec4 _vg_sink_pos;\n");
         out.append("float _vg_sink_psize;\n");
         out.append("int _vg_id_global;\n");
@@ -611,16 +632,6 @@ public final class RwImageStoreExtractor {
         final Set<String> present = new HashSet<>();
         for (AttributeSlot slot : attrs) present.add(slot.name());
 
-        out.append("#ifdef USE_VERTEX_COMPRESSION\n");
-        if (present.contains("a_PosId")) {
-            out.append("    _vert_position = vec3(a_PosId.xyz) * VERT_POS_SCALE + VERT_POS_OFFSET;\n");
-            out.append("    _draw_id = (a_PosId.w >> 8u) & 0xFFu;\n");
-            out.append("    _material_params = (a_PosId.w >> 0u) & 0xFFu;\n");
-        }
-        if (present.contains("a_TexCoord")) out.append("    _vert_tex_diffuse_coord = a_TexCoord * VERT_TEX_SCALE;\n");
-        if (present.contains("a_LightCoord")) out.append("    _vert_tex_light_coord = a_LightCoord;\n");
-        if (present.contains("a_Color")) out.append("    _vert_color = a_Color;\n");
-        out.append("#else\n");
         if (present.contains("a_PosId")) out.append("    _vert_position = a_PosId;\n");
         if (present.contains("a_TexCoord")) out.append("    _vert_tex_diffuse_coord = a_TexCoord;\n");
         if (present.contains("a_Color")) out.append("    _vert_color = a_Color;\n");
@@ -630,15 +641,21 @@ public final class RwImageStoreExtractor {
             out.append("    _draw_id = (_vg_draw_params >> 8) & 0xFFu;\n");
             out.append("    _vert_tex_light_coord = ivec2((uvec2((a_LightCoord >> 16) & 0xFFFFu) >> uvec2(0, 8)) & uvec2(0xFFu));\n");
         }
-        out.append("#endif\n");
     }
 
     private static void emitDispatchMain(StringBuilder out, RwExtractMode mode, List<AttributeSlot> attrs) {
         out.append("void main() {\n");
         switch (mode) {
             case CHUNK -> {
-                out.append("    int id = _vg_startVertex + int(gl_GlobalInvocationID.x);\n");
-                out.append("    if (id >= _vg_startVertex + _vg_vertexCount) return;\n");
+                out.append("    uint _vg_g = uint(_vg_invocationBase) + gl_GlobalInvocationID.x;\n");
+                out.append("    if (_vg_g >= uint(_vg_vertexTotal)) return;\n");
+                out.append("    int _vg_lo = _vg_rangeBase;\n");
+                out.append("    int _vg_hi = _vg_rangeBase + _vg_rangeCount - 1;\n");
+                out.append("    while (_vg_lo < _vg_hi) {\n");
+                out.append("        int _vg_mid = (_vg_lo + _vg_hi + 1) >> 1;\n");
+                out.append("        if (_vg_ranges.r[_vg_mid].y <= _vg_g) _vg_lo = _vg_mid; else _vg_hi = _vg_mid - 1;\n");
+                out.append("    }\n");
+                out.append("    int id = int(_vg_ranges.r[_vg_lo].x + (_vg_g - _vg_ranges.r[_vg_lo].y));\n");
                 out.append("    _vg_id_global = id;\n");
                 out.append("    _vg_unpack(uint(id));\n");
                 emitVertexDecode(out, attrs);
@@ -787,11 +804,6 @@ public final class RwImageStoreExtractor {
             "vec2(uintBitsToFloat(_vg_vbuf.data[base + 4u]), uintBitsToFloat(_vg_vbuf.data[base + 5u]))"));
         addAttr(m, new AttributeSlot("a_LightCoord", "uint", 24,
             "_vg_vbuf.data[base + 6u]"));
-
-        addAttr(m, new AttributeSlot("a_PosId", "uvec4", 0,
-                "uvec4(0u, 0u, 0u, 0u)", false));
-        addAttr(m, new AttributeSlot("a_LightCoord", "ivec2", 24,
-                "ivec2(0, 0)", false));
 
         final LinkedHashMap<String, Map<String, AttributeSlot>> immutable = new LinkedHashMap<>();
         for (var e : m.entrySet()) immutable.put(e.getKey(), Map.copyOf(e.getValue()));

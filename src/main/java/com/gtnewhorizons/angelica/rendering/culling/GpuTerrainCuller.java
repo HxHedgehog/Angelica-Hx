@@ -28,7 +28,6 @@ import org.embeddedt.embeddium.impl.render.chunk.region.RenderRegion;
 import org.embeddedt.embeddium.impl.render.chunk.terrain.TerrainRenderPass;
 import org.embeddedt.embeddium.impl.render.viewport.CameraTransform;
 import org.joml.Matrix4f;
-import org.joml.Matrix4fc;
 import org.lwjgl.opengl.GL11;
 import org.lwjgl.opengl.GL15;
 import org.lwjgl.opengl.GL40;
@@ -105,11 +104,22 @@ public final class GpuTerrainCuller {
 
     private final PassState primaryPass = new PassState();
     private final PassState secondPass = new PassState();
+    private final PassState sortedPass = new PassState();
     private PassState buildPass = primaryPass;
     private PassState current = primaryPass;
     private boolean secondPrepared;
+    private boolean primaryReady;
+    private TerrainRenderPass preparedPrimaryPass;
+    private boolean translucentReady;
+    private ChunkRenderListIterable preparedRenderLists;
     private int totalAppendedEntries;
     @Getter private boolean computeActiveThisPass;
+
+    private static GpuTerrainCuller activeInstance;
+
+    public static GpuTerrainCuller activeInstance() {
+        return activeInstance;
+    }
 
     private int currentDrawStart;
     private int currentDrawCount;
@@ -121,7 +131,6 @@ public final class GpuTerrainCuller {
 
     private ByteBuffer uboBytes;
     private Matrix4f mvp;
-    private Matrix4f mvNoTranslation;
     private int passOutputBase;
     private ChunkPrimitiveType walkPrimitiveType;
 
@@ -136,9 +145,20 @@ public final class GpuTerrainCuller {
             if (Tracy.ENABLED) TerrainDrawStats.recordSectionMetaBytes(bytes);
             return true;
         };
+        activeInstance = this;
+    }
+
+    private void invalidatePreparedPasses() {
+        preparedRenderLists = null;
+        preparedPrimaryPass = null;
+        primaryReady = false;
+        secondPrepared = false;
+        translucentReady = false;
+        computeActiveThisPass = false;
     }
 
     void beginCullPass(int indexPointerMask) {
+        invalidatePreparedPasses();
         this.computeActiveThisPass = GpuCulling.mode().computeEnabled();
         this.totalAppendedEntries = 0;
         this.secondPrepared = false;
@@ -222,11 +242,14 @@ public final class GpuTerrainCuller {
         currentDrawStart = 0;
         currentDrawCount = 0;
         if (current == secondPass) secondPrepared = false;
+        else if (current == primaryPass) primaryReady = false;
+        else if (current == sortedPass) translucentReady = false;
     }
 
     private void dispatchPreparedPasses() {
         if (!computeActiveThisPass || totalAppendedEntries == 0) return;
-        if (!needsDispatch(primaryPass) && (!secondPrepared || !needsDispatch(secondPass))) return;
+        if (!needsDispatch(primaryPass) && (!secondPrepared || !needsDispatch(secondPass))
+            && (!translucentReady || !needsDispatch(sortedPass))) return;
         if (!culler.ensureReady()) return;
         if (frustumUboBytes == null) {
             LOG.warn("GpuTerrainCuller: frustum UBO not set before dispatch; skipping cull");
@@ -242,6 +265,7 @@ public final class GpuTerrainCuller {
         try {
             dispatchPass(primaryPass);
             if (secondPrepared) dispatchPass(secondPass);
+            if (translucentReady) dispatchPass(sortedPass);
         } finally {
             BackendManager.RENDER_BACKEND.endComputeDispatchBatch();
         }
@@ -289,12 +313,54 @@ public final class GpuTerrainCuller {
     }
 
     public void beginRenderPass(ChunkRenderMatrices matrices, ChunkRenderListIterable renderLists, TerrainRenderPass renderPass, CameraTransform occlusionCamera, CameraTransform camera, boolean useBlockFaceCulling) {
-        if (renderPass == AngelicaRenderPassConfiguration.CUTOUT_MIPPED_PASS && renderLists.hasPass(renderPass)
-            && selectPreparedSecondPass()) {
+        if (renderLists == preparedRenderLists && renderLists.hasPass(renderPass)) {
+            if (renderPass == preparedPrimaryPass && selectPreparedPrimaryPass()) return;
+            if (renderPass == AngelicaRenderPassConfiguration.CUTOUT_MIPPED_PASS && selectPreparedSecondPass()) return;
+            if (renderPass == AngelicaRenderPassConfiguration.TRANSLUCENT_PASS && selectPreparedSortedPass()) return;
+        }
+        if (!renderLists.hasPass(renderPass)) {
+            if (renderLists != preparedRenderLists) invalidatePreparedPasses();
+            current = null;
             return;
         }
-        if (!renderLists.hasPass(renderPass)) return;
 
+        walkPrimaryGroup(matrices, renderLists, renderPass, occlusionCamera, camera, useBlockFaceCulling);
+        preparedRenderLists = renderLists;
+        preparedPrimaryPass = renderPass;
+        primaryReady = true;
+    }
+
+    boolean selectPreparedPrimaryPass() {
+        if (!primaryReady || !computeActiveThisPass) return false;
+        this.current = primaryPass;
+        this.currentDrawStart = 0;
+        this.currentDrawCount = 0;
+        return true;
+    }
+
+    boolean selectPreparedSortedPass() {
+        if (!translucentReady || !computeActiveThisPass) return false;
+        this.current = sortedPass;
+        this.currentDrawStart = 0;
+        this.currentDrawCount = 0;
+        return true;
+    }
+
+    void startSortedPass(int mask) {
+        if (!secondPrepared) primaryPass.entryCount = totalAppendedEntries - primaryPass.entryBase;
+        sortedPass.reset(mask, totalAppendedEntries);
+        this.buildPass = sortedPass;
+        this.current = sortedPass;
+    }
+
+    void finishSortedPass() {
+        sortedPass.entryCount = totalAppendedEntries - sortedPass.entryBase;
+        this.translucentReady = true;
+        this.buildPass = primaryPass;
+        this.current = primaryPass;
+    }
+
+    private void walkPrimaryGroup(ChunkRenderMatrices matrices, ChunkRenderListIterable renderLists, TerrainRenderPass renderPass, CameraTransform occlusionCamera, CameraTransform camera, boolean useBlockFaceCulling) {
         final boolean combined = renderPass == AngelicaRenderPassConfiguration.SOLID_PASS && AngelicaRenderPassConfiguration.CUTOUT_MIPPED_PASS != null && renderLists.hasPass(AngelicaRenderPassConfiguration.CUTOUT_MIPPED_PASS);
 
         final int indexPointerMask = renderPass.isSorted() ? 0xFFFFFFFF : 0;
@@ -310,24 +376,7 @@ public final class GpuTerrainCuller {
             return;
         }
 
-        if (uboBytes == null) {
-            uboBytes = FrustumExtractor.allocateUboByteBuffer();
-        }
-        final boolean shadow = ShadowRenderer.ACTIVE;
-        final Matrix4fc proj = matrices.projection();
-        final Matrix4fc mv = matrices.modelView();
-        if (mvp == null) mvp = new Matrix4f();
-        if (mvNoTranslation == null) mvNoTranslation = new Matrix4f();
-        mvNoTranslation.set(mv).setTranslation(0f, 0f, 0f);
-        proj.mul(mvNoTranslation, mvp);
-        final float camX = (float) camera.intX + camera.fracX;
-        final float camY = (float) camera.intY + camera.fracY;
-        final float camZ = (float) camera.intZ + camera.fracZ;
-        FrustumExtractor.writeStd140(mvp, 0, 0, uboBytes);
-        FrustumExtractor.patchCameraWorld(camX, camY, camZ, uboBytes);
-        FrustumExtractor.patchBypassFrustum(shadow, uboBytes);
-
-        frustumUboBytes = uboBytes;
+        prepareFrustumUbo(matrices, camera);
 
         syncSectionMetaIfDirty();
 
@@ -341,6 +390,74 @@ public final class GpuTerrainCuller {
         if (walkPrimitiveType != null) {
             FrustumExtractor.patchPrimitiveRatio(walkPrimitiveType.getVerticesPerPrimitive(), walkPrimitiveType.getIndexBufferElementsPerPrimitive(), uboBytes);
         }
+    }
+
+    private void prepareFrustumUbo(ChunkRenderMatrices matrices, CameraTransform camera) {
+        if (uboBytes == null) {
+            uboBytes = FrustumExtractor.allocateUboByteBuffer();
+        }
+        final boolean shadow = ShadowRenderer.ACTIVE;
+        if (mvp == null) mvp = new Matrix4f();
+        FrustumExtractor.writeFrustum(matrices.projection(), matrices.modelView(), camera, mvp, uboBytes);
+        FrustumExtractor.patchBypassFrustum(shadow, uboBytes);
+
+        frustumUboBytes = uboBytes;
+    }
+
+    public void prepareAllPasses(ChunkRenderMatrices matrices, ChunkRenderListIterable renderLists, CameraTransform occlusionCamera, CameraTransform camera, boolean useBlockFaceCulling) {
+        invalidatePreparedPasses();
+
+        final boolean hasSolid = AngelicaRenderPassConfiguration.SOLID_PASS != null && renderLists.hasPass(AngelicaRenderPassConfiguration.SOLID_PASS);
+        final boolean hasCutout = AngelicaRenderPassConfiguration.CUTOUT_MIPPED_PASS != null && renderLists.hasPass(AngelicaRenderPassConfiguration.CUTOUT_MIPPED_PASS);
+        final boolean hasTranslucent = AngelicaRenderPassConfiguration.TRANSLUCENT_PASS != null && renderLists.hasPass(AngelicaRenderPassConfiguration.TRANSLUCENT_PASS);
+        final TerrainRenderPass primary = hasSolid ? AngelicaRenderPassConfiguration.SOLID_PASS : hasCutout ? AngelicaRenderPassConfiguration.CUTOUT_MIPPED_PASS : null;
+        if (primary == null && !hasTranslucent) return;
+
+        try {
+            if (primary != null) {
+                walkPrimaryGroup(matrices, renderLists, primary, occlusionCamera, camera, useBlockFaceCulling);
+            }
+            if (hasTranslucent) {
+                walkSortedGroup(matrices, renderLists, occlusionCamera, camera, useBlockFaceCulling, primary != null);
+            }
+            dispatchPreparedPasses();
+            preparedRenderLists = renderLists;
+            preparedPrimaryPass = primary;
+            primaryReady = primary != null;
+        } catch (RuntimeException | Error failure) {
+            invalidatePreparedPasses();
+            throw failure;
+        }
+    }
+
+    private void walkSortedGroup(ChunkRenderMatrices matrices, ChunkRenderListIterable renderLists, CameraTransform occlusionCamera, CameraTransform camera, boolean useBlockFaceCulling, boolean chained) {
+        final int indexPointerMask = AngelicaRenderPassConfiguration.TRANSLUCENT_PASS.isSorted() ? 0xFFFFFFFF : 0;
+        if (chained) {
+            startSortedPass(indexPointerMask);
+        } else {
+            invalidatePreparedPasses();
+            computeActiveThisPass = GpuCulling.mode().computeEnabled();
+            totalAppendedEntries = 0;
+            secondPrepared = false;
+            passOutputBase = 0;
+            walkPrimitiveType = null;
+            primaryPass.reset(0, 0);
+            sortedPass.reset(indexPointerMask, 0);
+            buildPass = sortedPass;
+            current = sortedPass;
+        }
+
+        if (computeActiveThisPass) {
+            if (!chained) prepareFrustumUbo(matrices, camera);
+            syncSectionMetaIfDirty();
+            walkPass(renderLists, AngelicaRenderPassConfiguration.TRANSLUCENT_PASS, occlusionCamera, useBlockFaceCulling);
+
+            if (walkPrimitiveType != null) {
+                FrustumExtractor.patchPrimitiveRatio(walkPrimitiveType.getVerticesPerPrimitive(), walkPrimitiveType.getIndexBufferElementsPerPrimitive(), uboBytes);
+            }
+        }
+
+        finishSortedPass();
     }
 
     private void walkPass(ChunkRenderListIterable renderLists, TerrainRenderPass renderPass, CameraTransform occlusionCamera, boolean useBlockFaceCulling) {
@@ -497,7 +614,7 @@ public final class GpuTerrainCuller {
 
     void drawRegionRange(CommandList commandList, GlTessellation tessellation, GlPrimitiveType primitiveType, int drawStart, int drawCount) {
         if (drawCount == 0) return;
-        dispatchPreparedPasses();
+        if (!current.dispatched) dispatchPreparedPasses();
         if (!current.dispatched) return;
 
         if (Tracy.ENABLED) {
@@ -539,5 +656,8 @@ public final class GpuTerrainCuller {
         uboBytes = null;
         primaryPass.releaseRanges();
         secondPass.releaseRanges();
+        sortedPass.releaseRanges();
+        invalidatePreparedPasses();
+        if (activeInstance == this) activeInstance = null;
     }
 }

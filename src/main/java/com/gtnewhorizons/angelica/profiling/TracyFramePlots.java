@@ -22,8 +22,6 @@ import com.gtnewhorizons.angelica.rendering.tesr.TesrBatchRenderer;
 import net.coderbot.iris.pipeline.ShadowRenderer;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.WorldRenderer;
-import org.embeddedt.embeddium.impl.render.chunk.SharedQuadIndexBuffer;
-import org.embeddedt.embeddium.impl.render.chunk.region.RenderRegionManager;
 
 public final class TracyFramePlots {
     private static final long P_ALLOC_RATE = Tracy.plotHandle("allocRate", TracyBackend.PLOT_FORMAT_MEMORY);
@@ -35,6 +33,11 @@ public final class TracyFramePlots {
     private static final PlotDelta P_GL_DRAW_CALLS = new PlotDelta("gl.drawCalls");
     private static final PlotDelta P_GL_TEX_BIND_MISSES = new PlotDelta("gl.texBindMisses");
     private static final PlotDelta P_GL_PROGRAM_SWITCHES = new PlotDelta("gl.programSwitches");
+    private static final PlotDelta P_GLSM_BRACKETS = new PlotDelta("glsm.brackets");
+    private static final PlotDelta P_GLSM_COW_SLOTS = new PlotDelta("glsm.cowSlots");
+    private static final PlotDelta P_GLSM_POP_RESTORES = new PlotDelta("glsm.popRestores");
+    private static final PlotDelta P_GLSM_POP_GL_CALLS = new PlotDelta("glsm.popGLCalls");
+    private static final PlotDelta P_GLSM_POP_DISCARDS = new PlotDelta("glsm.popDiscards");
     private static final PlotDelta P_GL_LIST_PLAYBACKS = new PlotDelta("gl.listPlaybacks");
     private static final PlotDelta P_GL_STREAMED_BYTES = new PlotDelta("gl.streamedBytes", TracyBackend.PLOT_FORMAT_MEMORY);
     private static final PlotDelta P_GL_STREAM_DRAWS = new PlotDelta("gl.streamDraws");
@@ -48,7 +51,7 @@ public final class TracyFramePlots {
     private static final long P_TERRAIN_DRAW_COMMANDS = Tracy.plotHandle("terrain.drawCommands");
     private static final long P_TERRAIN_REGIONS_DRAWN = Tracy.plotHandle("terrain.regionsDrawn");
     private static final long P_VOX_ENCODERS = Tracy.plotHandle("voxelization.encoders");
-    private static final long P_VOX_DISPATCHES = Tracy.plotHandle("voxelization.dispatches");
+    private static final long P_VOX_RANGES = Tracy.plotHandle("voxelization.ranges");
     private static final long P_VOX_REGIONS = Tracy.plotHandle("voxelization.regions");
     private static final long P_DRAW_BATCH_REBUILDS = Tracy.plotHandle("draw.batchRebuilds");
     private static final PlotDelta P_DRAW_INDEX_BUFFER_GROWTHS = new PlotDelta("draw.indexBufferGrowths");
@@ -86,6 +89,11 @@ public final class TracyFramePlots {
     private static final PlotDelta P_TESR_CACHE_HITS = new PlotDelta("tesr.cacheHits");
     private static final PlotDelta P_TESR_CACHE_MISSES = new PlotDelta("tesr.cacheMisses");
     private static final PlotDelta P_TESR_MODEL_PARTS = new PlotDelta("tesr.modelParts");
+    private static final PlotDelta P_ARMOR_BASE_REUSES = new PlotDelta("glint.armorBaseReuses");
+    private static final PlotDelta P_GLINT_PASS_REUSES = new PlotDelta("glint.passReuses");
+    private static final PlotDelta P_ARMOR_LOOP_SKIPS = new PlotDelta("glint.armorLoopSkips");
+    private static final PlotDelta P_ARMOR_SECTION_SKIPS = new PlotDelta("glint.armorSectionSkips");
+    private static final PlotDelta P_REDRAWN_INSTANCES = new PlotDelta("glint.redrawnInstances");
     private static final PlotDelta P_TESR_LIVE_FALLBACKS = new PlotDelta("tesr.liveFallbacks");
     private static final PlotDelta P_ITEMS_INSTANCED = new PlotDelta("items.instanced");
     private static final PlotDelta P_ITEMS_FALLBACK = new PlotDelta("items.fallback");
@@ -176,6 +184,11 @@ public final class TracyFramePlots {
         P_GL_DRAW_CALLS.plot(GLStateManager.drawCalls);
         P_GL_TEX_BIND_MISSES.plot(GLStateManager.texBindMisses);
         P_GL_PROGRAM_SWITCHES.plot(GLStateManager.programSwitches);
+        P_GLSM_BRACKETS.plot(GLStateManager.attribPushes);
+        P_GLSM_COW_SLOTS.plot(GLStateManager.attribSlotsSaved);
+        P_GLSM_POP_RESTORES.plot(GLStateManager.attribValueRestores);
+        P_GLSM_POP_GL_CALLS.plot(GLStateManager.attribBackendCalls);
+        P_GLSM_POP_DISCARDS.plot(GLStateManager.attribDiscards);
         P_GL_LIST_PLAYBACKS.plot(DisplayListManager.listPlaybacks);
         P_GL_STREAMED_BYTES.plot(TessellatorStreamingDrawer.streamedBytes);
         P_GL_STREAM_DRAWS.plot(TessellatorStreamingDrawer.streamDraws);
@@ -188,7 +201,7 @@ public final class TracyFramePlots {
         Tracy.plotInt(P_TERRAIN_REGIONS_DRAWN, TerrainDrawStats.takeRegionsDrawn());
         Tracy.plotInt(P_DRAW_BATCH_REBUILDS, TerrainDrawStats.takeBatchRebuilds());
         Tracy.plotInt(P_VOX_ENCODERS, SdlShadowVoxelizationSink.takeEncoders());
-        Tracy.plotInt(P_VOX_DISPATCHES, SdlShadowVoxelizationSink.takeDispatches());
+        Tracy.plotInt(P_VOX_RANGES, SdlShadowVoxelizationSink.takeRanges());
         Tracy.plotInt(P_VOX_REGIONS, SdlShadowVoxelizationSink.takeRegions());
         Tracy.plotInt(P_CULL_REGIONS_DRAWN, TerrainDrawStats.takeCullRegionsDrawn());
         Tracy.plotInt(P_CULL_MAX_REGION_COMMANDS, TerrainDrawStats.takeCullMaxRegionCommands());
@@ -229,6 +242,11 @@ public final class TracyFramePlots {
         P_TESR_CACHE_HITS.plot(AngelicaTesrMeshCache.cacheHits);
         P_TESR_CACHE_MISSES.plot(AngelicaTesrMeshCache.cacheMisses);
         P_TESR_MODEL_PARTS.plot(batcher.statParts());
+        P_ARMOR_BASE_REUSES.plot(batcher.statArmorBaseReuses());
+        P_GLINT_PASS_REUSES.plot(batcher.statGlintPassReuses());
+        P_ARMOR_LOOP_SKIPS.plot(batcher.statArmorLoopSkips());
+        P_ARMOR_SECTION_SKIPS.plot(batcher.statArmorSectionSkips());
+        P_REDRAWN_INSTANCES.plot(batcher.statRedrawnInstances());
         P_TESR_LIVE_FALLBACKS.plot(batcher.statLiveFallbacks());
         P_ITEMS_INSTANCED.plot(DroppedItemInstancer.statInstanced());
         P_ITEMS_FALLBACK.plot(DroppedItemInstancer.statFallback());
@@ -247,9 +265,9 @@ public final class TracyFramePlots {
             TESR_BAILS[reason.ordinal()].plot(batcher.statBail(reason));
         }
 
-        P_MESH_UPLOADED_SECTIONS.plot(RenderRegionManager.getSectionsUploaded());
-        P_MESH_UPLOADED_BYTES.plot(RenderRegionManager.getBytesUploaded());
-        P_DRAW_INDEX_BUFFER_GROWTHS.plot(SharedQuadIndexBuffer.getGrowths());
+        P_MESH_UPLOADED_SECTIONS.plot(TerrainDrawStats.getSectionsUploaded());
+        P_MESH_UPLOADED_BYTES.plot(TerrainDrawStats.getBytesUploaded());
+        P_DRAW_INDEX_BUFFER_GROWTHS.plot(TerrainDrawStats.getIndexBufferGrowths());
         Tracy.plotInt(P_MESH_META_SLOTS, GpuCulling.sectionMeta().getHighWaterMark());
         Tracy.plotInt(P_MT_QUEUE_DEPTH, AngelicaRenderQueue.getQueueDepth());
         Tracy.plotInt(P_MT_QUEUE_TASKS, AngelicaRenderQueue.getLastFrameTasksRan());

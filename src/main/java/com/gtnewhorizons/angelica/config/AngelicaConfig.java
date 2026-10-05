@@ -25,13 +25,35 @@ public class AngelicaConfig {
     @Config.RequiresWorldRestart
     public static int chunkBuilderThreadCount;
 
-    @Config.Comment("Enable NotFine Options")
-    @Config.DefaultBoolean(false)
-    public static boolean enableNotFineOptions;
-
-    @Config.Comment("Enable Reese's Sodium Options")
+    @Config.Comment("Decode block and item textures on multiple threads for faster startup. Disable if you notice missing or broken textures.")
     @Config.DefaultBoolean(true)
-    public static boolean enableReesesSodiumOptions;
+    public static boolean enableParallelAtlasDecode;
+
+    @Config.Comment("Generate texture mipmaps on multiple threads for faster startup. Disable if you notice broken mipmaps.")
+    @Config.DefaultBoolean(true)
+    public static boolean enableParallelAtlasMipmaps;
+
+    @Config.Comment("Upload the block and item texture atlas in large batches instead of one texture at a time. Disable if you notice missing or broken textures.")
+    @Config.DefaultBoolean(true)
+    public static boolean enableBatchedAtlasUpload;
+
+    @Config.Comment("Resource pack classes the player allows to be read on worker threads during texture loading.")
+    @Config.DefaultStringList({})
+    public static String[] atlasTrustedPacks;
+
+    @Config.Comment("Built-in trusted resource pack classes the player has turned off.")
+    @Config.DefaultStringList({})
+    public static String[] atlasDistrustedPacks;
+
+    @Config.Comment("Resource pack classes seen during texture loading that are not trusted. Recorded automatically; trust them from Video Settings > Performance.")
+    @Config.DefaultStringList({})
+    public static String[] atlasObservedPacks;
+
+    @Config.Comment("Worker threads for startup and shader loading work. 0 = automatic.")
+    @Config.DefaultInt(0)
+    @Config.RangeInt(min = 0, max = 32)
+    @Config.RequiresMcRestart
+    public static int workerThreadCount;
 
     @Config.Comment("Inject BakedModel rendering into some vanilla blocks")
     @Config.DefaultBoolean(false)
@@ -62,6 +84,10 @@ public class AngelicaConfig {
     @Config.DefaultBoolean(true)
     @Config.RequiresMcRestart
     public static boolean enableVBOClouds;
+
+    @Config.Comment("Replace rain/snow rendering with a cached, instanced version.")
+    @Config.DefaultBoolean(true)
+    public static boolean enableInstancedWeather;
 
     @Config.Comment("Uses cached attributes for VBO rendering, resulting in less CPU overhead. Disable if you notice any graphical issues.")
     @Config.DefaultBoolean(true)
@@ -141,11 +167,6 @@ public class AngelicaConfig {
     @Config.DefaultBoolean(true)
     @Config.RequiresMcRestart
     public static boolean shaderParityFlip;
-
-    @Config.Comment("Skip the end-of-frame glFlush before the buffer swap [Experimental]")
-    @Config.DefaultBoolean(false)
-    @Config.RequiresMcRestart
-    public static boolean skipEndOfFrameFlush;
 
     @Config.Comment("Cache the vanilla skull mesh per skull type/player skin and batch skull draws")
     @Config.DefaultBoolean(true)
@@ -405,6 +426,11 @@ public class AngelicaConfig {
         @Config.DefaultBoolean(true)
         @Config.RequiresMcRestart
         public boolean narrowLegendsMod;
+
+        @Config.Comment("Narrow Power Converters transformer exclusions to allow GL redirection")
+        @Config.DefaultBoolean(true)
+        @Config.RequiresMcRestart
+        public boolean narrowPowerConverters;
     }
 
     @Config.Comment("Renders chunks before neighbors are ready. Improves loading at render distance edges, useful for low render distance servers.")
@@ -414,6 +440,10 @@ public class AngelicaConfig {
     @Config.Comment("Disables additional F3 information added by Angelica.")
     @Config.DefaultBoolean(false)
     public static boolean disableF3Additions;
+
+    @Config.Comment("Shows developer counters (FFP, streaming, TESR, transfer) on the F3 screen. Toggle in game with F3+V.")
+    @Config.DefaultBoolean(false)
+    public static boolean verboseF3;
 
     @Config.Comment("Replaces various FFP uploads with statically allocated VBO's.")
     @Config.DefaultBoolean(true)
@@ -429,6 +459,22 @@ public class AngelicaConfig {
     @Config.DefaultBoolean(false)
     @Config.RequiresMcRestart
     public static boolean disableGLVersionPinning;
+
+    @Config.Comment("Requested OpenGL context version as an integer (e.g. 46, 41, 33). 0 = highest available. Falls back to probing when the version cannot be created.")
+    @Config.DefaultInt(0)
+    @Config.RangeInt(min = 0, max = 46)
+    @Config.RequiresMcRestart
+    public static int glVersion;
+
+    @Config.Comment("Render backend: OPENGL, or SDL_GPU (experimental; Vulkan/Metal/Direct3D 12 through SDL3, falls back to OpenGL when no device can be created). -Dangelica.sdlgpu.enable=true|false overrides this.")
+    @Config.DefaultEnum("OPENGL")
+    @Config.RequiresMcRestart
+    public static RenderBackendChoice renderBackend;
+
+    @Config.Comment("SDL GPU driver: AUTO, VULKAN, METAL (macOS), D3D12 (Windows). Vulkan on macOS needs MoltenVK and uses Metal without it. -Dangelica.sdlgpu.driver overrides this.")
+    @Config.DefaultEnum("AUTO")
+    @Config.RequiresMcRestart
+    public static SdlGpuDriver sdlGpuDriver;
 
     @Config.Comment("Disables GL Error checks. Always set to false in dev env or if LWJGL debug is on. Improves performance.")
     @Config.DefaultBoolean(true)
@@ -464,12 +510,46 @@ public class AngelicaConfig {
         "minecraft:andesite", "minecraft:dirt", "minecraft:granite", "minecraft:grass", "minecraft:mycelium", "minecraft:sand", "minecraft:soul_sand", "etfuturum:calcite", "etfuturum:coarse_dirt", "etfuturum:concrete_powder", "etfuturum:grass_path", "BiomesOPlenty:ash", "BiomesOPlenty:driedDirt", "BiomesOPlenty:hardDirt", "BiomesOPlenty:hardSand", "BiomesOPlenty:mud", "BiomesOPlenty:newBopDirt", "Botania:dirtPath", "Botania:enchantedSoil", "Botania:livingrock", "Botania:prismarine", "Botania:shimmerrock", "Botany:loam", "Botany:loamNoWeed", "Botany:soil", "Botany:soilNoWeed", "chisel:moss", "chisel:moss_carpet", "ExtraUtilities:color_hellsand", "ExtraUtilities:cursedearthside", "GalaxySpace:acentauribbgrunt", "GalaxySpace:acentauribbsubgrunt", "GalaxySpace:barnardaCdirt", "GalaxySpace:barnardaEgrunt", "GalaxySpace:barnardaEsubgrunt", "GalaxySpace:barnardaFgrunt", "GalaxySpace:barnardaFsubgrunt", "GalaxySpace:callistoblocks", "GalaxySpace:ceresblocks", "GalaxySpace:deimosblocks", "GalaxySpace:europagrunt", "GalaxySpace:ganymedeblocks", "GalaxySpace:haumeablocks", "GalaxySpace:ioblocks", "GalaxySpace:makemakegrunt", "GalaxySpace:mercuryblocks", "GalaxySpace:mirandablocks", "GalaxySpace:oberonblocks", "GalaxySpace:phobosblocks", "GalaxySpace:proteusblocks", "GalaxySpace:tcetieblocks", "GalaxySpace:titanblocks", "GalaxySpace:tritonblocks", "GalaxySpace:vegabgrunt", "GalaxySpace:vegabsubgrunt", "GalaxySpace:venusblocks", "gregtech:gt.blockgranites", "IC2:blockBasalt", "MagicBees:magicbees.enchantedEarth", "RandomThings:fertilizedDirt", "ToxicEverglades:blockDarkWorldGround2", "VillageNames:concretePowder", "witchery:pitdirt"
     };
 
+    @Config.Comment("Enable the Tracy profiler backend. Requires angelica-tracy.jar on the classpath. Overridden by -Dangelica.tracy")
+    @Config.DefaultBoolean(false)
+    @Config.RequiresMcRestart
+    public static boolean enableTracy;
+
+    @Config.Comment("Allow Tracy to accept connections from other machines, not just localhost")
+    @Config.DefaultBoolean(false)
+    @Config.RequiresMcRestart
+    public static boolean tracyAllowRemote;
+
+    @Config.Comment("Emit Tracy zones for many more call sites. More detail, more overhead. Overridden by -Dangelica.tracy.fineZones")
+    @Config.DefaultBoolean(false)
+    @Config.RequiresMcRestart
+    public static boolean tracyFineZones;
+
+    @Config.Comment("Max distinct Tracy zone/message call sites to preallocate. Overridden by -Dangelica.tracy.maxSrcLocs")
+    @Config.DefaultInt(4096)
+    @Config.RangeInt(min = 1024, max = 16384)
+    @Config.RequiresMcRestart
+    public static int tracyMaxSrcLocs;
+
+    @Config.Comment("Default length in seconds for a Tracy capture started from the command or video settings. 0 = until stopped")
+    @Config.DefaultInt(60)
+    @Config.RangeInt(min = 0, max = 3600)
+    public static int tracyCaptureSeconds;
+
     public static void applyGpuCullingMode() {
         GpuCulling.setMode(gpuCullingMode == null ? GpuCullingMode.CPU_ONLY : gpuCullingMode);
     }
 
     public static boolean cubeInstancingEnabled() {
         return enableEntityBatching && enableCubeInstancing;
+    }
+
+    public static boolean sdlGpuConfigured() {
+        return renderBackend == RenderBackendChoice.SDL_GPU;
+    }
+
+    public static String sdlGpuDriverName() {
+        return sdlGpuDriver == null ? "" : sdlGpuDriver.sdlName();
     }
 
     public static GLProfile getEffectiveGlProfile() {

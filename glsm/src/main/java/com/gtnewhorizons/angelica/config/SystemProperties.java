@@ -17,7 +17,7 @@ public final class SystemProperties {
 
     // Backend selection
     public static final String KEY_USE_SDL_GPU = "angelica.sdlgpu.enable";
-    public static final boolean USE_SDL_GPU = Boolean.getBoolean(KEY_USE_SDL_GPU);
+    public static final Boolean SDL_GPU_OVERRIDE = parseBooleanOverride(KEY_USE_SDL_GPU);
     public static final String GL_PROFILE = System.getProperty("angelica.glProfile", "");
     public static final boolean DISABLE_NVIDIA_WORKAROUND = Boolean.getBoolean("angelica.disableNvidiaWorkaround");
     public static final boolean DISABLE_LTW_WORKAROUND = Boolean.getBoolean("angelica.disableLtwWorkaround");
@@ -28,7 +28,8 @@ public final class SystemProperties {
 
     // SDL-GPU
     public static final String KEY_SDL_GPU_DRIVER = "angelica.sdlgpu.driver";
-    public static final String SDL_GPU_DRIVER = System.getProperty(KEY_SDL_GPU_DRIVER, "");
+    public static final String SDL_GPU_DRIVER_OVERRIDE = parseStringOverride(KEY_SDL_GPU_DRIVER);
+    public static final String MOLTENVK_DIR = System.getProperty("angelica.moltenvk.dir", "angelica" + File.separator + "natives" + File.separator + "moltenvk");
     public static final boolean SDL_GPU_DEBUG = Boolean.getBoolean("angelica.sdlgpu.debug");
     private static final SdlAssertionMode ENCODER_ASSERTIONS = parseEnum("angelica.sdlgpu.encoderAssertions", SdlAssertionMode.OFF, SdlAssertionMode.WARN, SdlAssertionMode.class);
     public static final boolean SDL_ENCODER_ASSERTIONS = ENCODER_ASSERTIONS != SdlAssertionMode.OFF;
@@ -37,12 +38,18 @@ public final class SystemProperties {
     public static final boolean SDL_VERIFY_PER_FRAME_UNIFORM_BLOCK = Boolean.getBoolean("angelica.sdlgpu.verifyPerFrameUniformBlock");
     public static final int SDL_FRAMES_IN_FLIGHT = Integer.getInteger("angelica.sdlgpu.framesInFlight", 2);
     public static final boolean DISABLE_SDL_PRESENTER_THREAD = Boolean.getBoolean("angelica.sdlgpu.disablePresenterThread");
+    public static final boolean SDL_DISABLE_IN_PASS_CLEAR = Boolean.getBoolean("angelica.sdlgpu.disableInPassClear");
 
     // Tracy
-    public static final boolean TRACY = Boolean.getBoolean("angelica.tracy");
-    public static final boolean TRACY_FINE_ZONES = Boolean.getBoolean("angelica.tracy.fineZones");
+    public static final Boolean TRACY_OVERRIDE = parseBooleanOverride("angelica.tracy");
+    public static final Boolean TRACY_FINE_ZONES_OVERRIDE = parseBooleanOverride("angelica.tracy.fineZones");
     public static final String TRACY_DIR = System.getProperty("angelica.tracy.dir", "angelica" + File.separator + "natives" + File.separator + "tracy");
-    public static final int TRACY_MAX_SRC_LOCS = Math.max(16, Integer.getInteger("angelica.tracy.maxSrcLocs", 4096));
+    public static final Integer TRACY_MAX_SRC_LOCS_OVERRIDE = Integer.getInteger("angelica.tracy.maxSrcLocs");
+
+    // Profiling
+    public static final String PROFILE_OPTS = System.getProperty("angelica.profile.opts", "event=wall,interval=5ms,alloc=512k,lock=10ms");
+    public static final String PROFILE_DIR = System.getProperty("angelica.profile.dir", "angelica" + File.separator + "profiles");
+    public static final String PROFILE_OUTPUT = System.getProperty("angelica.profile.output", "");
 
     // Flyby
     public static final String FLYBY_ROUTE = System.getProperty("angelica.flyby.route", "");
@@ -56,6 +63,13 @@ public final class SystemProperties {
     public static final String FLYBY_COMMANDS = System.getProperty("angelica.flyby.commands", "");
     public static final String FLYBY_ORIGIN = System.getProperty("angelica.flyby.origin", "");
     public static final FlybyPacing FLYBY_PACING = parseEnum("angelica.flyby.pacing", FlybyPacing.UNCAPPED, FlybyPacing.UNCAPPED, FlybyPacing.class);
+    public static final FlybyWeather FLYBY_WEATHER = parseEnum("angelica.flyby.weather", FlybyWeather.CLEAR, FlybyWeather.CLEAR, FlybyWeather.class);
+    public static final FlybyCamera FLYBY_CAMERA = parseEnum("angelica.flyby.camera", FlybyCamera.FIRST_PERSON, FlybyCamera.FIRST_PERSON, FlybyCamera.class);
+    public static final boolean FLYBY_JFR = Boolean.getBoolean("angelica.flyby.jfr");
+    public static final float FLYBY_PITCH = parseFloat("angelica.flyby.pitch");
+    public static final int FLYBY_SCREENSHOTS = Integer.getInteger("angelica.flyby.screenshots", 0);
+    public static final boolean FLYBY_DEBUG_HUD = Boolean.getBoolean("angelica.flyby.debugHud");
+    public static final String FLYBY_CRASH_TEST = System.getProperty("angelica.flyby.crashTest", "");
 
     // Debug
     public static final boolean LWJGL_DEBUG = Boolean.getBoolean("org.lwjgl.util.Debug");
@@ -70,6 +84,7 @@ public final class SystemProperties {
     public static final boolean FFP_TRACE = Boolean.getBoolean("angelica.debug.ffpTrace");
     public static final boolean LOG_DISPLAY_LIST_COMPILATION = Boolean.getBoolean("angelica.debug.displayLists.compilation");
     public static final boolean FORCE_ORPHAN_STREAMING = Boolean.getBoolean("angelica.debug.forceOrphanStreaming");
+    public static final boolean WEATHER_REBUILD_ALWAYS = Boolean.getBoolean("angelica.debug.weatherRebuildAlways");
     public static final String SHADER_DUMP_ROOT = "angelica_dumps";
 
     // Set by us, read by celeritas
@@ -118,6 +133,26 @@ public final class SystemProperties {
         CONFIGURED
     }
 
+    public enum FlybyCamera {
+        FIRST_PERSON,
+        THIRD_PERSON_BACK,
+        THIRD_PERSON_FRONT
+    }
+
+    public enum FlybyWeather {
+        CLEAR,
+        RAIN,
+        THUNDER;
+
+        public boolean isRaining() {
+            return this != CLEAR;
+        }
+
+        public boolean isThundering() {
+            return this == THUNDER;
+        }
+    }
+
     private static <E extends Enum<E>> E parseEnum(String key, E whenAbsent, E whenInvalid, Class<E> type) {
         final String raw = System.getProperty(key);
         if (raw == null || raw.isEmpty()) return whenAbsent;
@@ -129,6 +164,16 @@ public final class SystemProperties {
         }
     }
 
+    private static Boolean parseBooleanOverride(String key) {
+        final String raw = System.getProperty(key);
+        return raw == null || raw.isEmpty() ? null : Boolean.parseBoolean(raw);
+    }
+
+    private static String parseStringOverride(String key) {
+        final String raw = System.getProperty(key);
+        return raw == null || raw.isEmpty() ? null : raw;
+    }
+
     private static double parseDouble(String key) {
         final String raw = System.getProperty(key);
         if (raw == null || raw.isEmpty()) return 0.0D;
@@ -136,6 +181,16 @@ public final class SystemProperties {
             return Double.parseDouble(raw);
         } catch (NumberFormatException e) {
             return 0.0D;
+        }
+    }
+
+    private static float parseFloat(String key) {
+        final String raw = System.getProperty(key);
+        if (raw == null || raw.isEmpty()) return Float.NaN;
+        try {
+            return Float.parseFloat(raw);
+        } catch (NumberFormatException e) {
+            return Float.NaN;
         }
     }
 

@@ -253,6 +253,32 @@ class GLSMRedirectorTest {
     }
 
     @Test
+    void arbGenerateMipmapAliasIsRedirected() {
+        final ClassNode cn = makeClassWithMethodCall("org/lwjgl/opengl/ARBFramebufferObject", "glGenerateMipmap", "(I)V");
+
+        final boolean changed = new GLSMRedirector().transformClassNode("com.example.TestClass", cn);
+
+        assertTrue(changed);
+        assertEquals(GLSM, firstCall(cn).owner);
+        assertEquals("glGenerateMipmap", firstCall(cn).name);
+        assertEquals("(I)V", firstCall(cn).desc);
+        assertTrue(unmappedSeen().isEmpty());
+    }
+
+    @Test
+    void extGenerateMipmapAliasIsRedirected() {
+        final ClassNode cn = makeClassWithMethodCall("org/lwjgl/opengl/EXTFramebufferObject", "glGenerateMipmapEXT", "(I)V");
+
+        final boolean changed = new GLSMRedirector().transformClassNode("com.example.TestClass", cn);
+
+        assertTrue(changed);
+        assertEquals(GLSM, firstCall(cn).owner);
+        assertEquals("glGenerateMipmap", firstCall(cn).name);
+        assertEquals("(I)V", firstCall(cn).desc);
+        assertTrue(unmappedSeen().isEmpty());
+    }
+
+    @Test
     void newlyMappedReadPixelsIsRedirected() {
         final ClassNode cn = makeClassWithMethodCall("org/lwjgl/opengl/GL11", "glReadPixels", "(IIIIIILjava/nio/IntBuffer;)V");
 
@@ -262,6 +288,15 @@ class GLSMRedirectorTest {
         assertEquals(GLSM, firstCall(cn).owner);
         assertEquals("glReadPixels", firstCall(cn).name);
         assertTrue(unmappedSeen().isEmpty());
+    }
+
+    @Test
+    void pixelPackBufferReadbackOverloadsHaveDeclaredTargets() throws Exception {
+        assertRedirectedToDeclaredTarget(new String[][]{
+            {"org/lwjgl/opengl/GL11", "glReadPixels", "(IIIIIIJ)V"},
+            {"org/lwjgl/opengl/GL11C", "glReadPixels", "(IIIIIIJ)V"},
+            {"org/lwjgl/opengl/GL11", "glGetTexImage", "(IIIIJ)V"},
+        });
     }
 
     @Test

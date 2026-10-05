@@ -10,6 +10,7 @@ import com.gtnewhorizons.angelica.glsm.backend.RenderBackend;
 import com.gtnewhorizons.angelica.glsm.backend.VSyncMode;
 import me.eigenraven.lwjgl3ify.api.Lwjgl3Aware;
 import me.eigenraven.lwjgl3ify.client.MainThreadExec;
+import org.lwjgl.PointerBuffer;
 import org.lwjglx.Lwjgl3ifyEventLoop;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -27,6 +28,7 @@ import org.lwjgl.opengl.GL31C;
 import org.lwjgl.opengl.GL32C;
 import org.lwjgl.opengl.GL33C;
 import org.lwjgl.opengl.GL40C;
+import org.lwjgl.opengl.GL41C;
 import org.lwjgl.opengl.GL42C;
 import org.lwjgl.opengl.GL43C;
 import org.lwjgl.opengl.GL44C;
@@ -59,6 +61,7 @@ import java.nio.ShortBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
 /**
@@ -73,6 +76,7 @@ public final class Lwjgl3GLRenderBackend extends RenderBackend {
     private GLCapabilities caps;
     private GLDebugMessageCallback debugCallback;
     private boolean debugOutputActive;
+    private boolean amdShaderSourceWorkaround;
 
     private SDL_EventFilter dropEventFilter;
     private final ConcurrentLinkedQueue<String> droppedFiles = new ConcurrentLinkedQueue<>();
@@ -82,6 +86,15 @@ public final class Lwjgl3GLRenderBackend extends RenderBackend {
     @Override
     public void init() {
         caps = GL.getCapabilities();
+        if (GLStateManager.isWindows()) {
+            final String vendor = GL11C.glGetString(GL11C.GL_VENDOR);
+            if (vendor != null) {
+                final String normalizedVendor = vendor.toLowerCase(Locale.ROOT);
+                amdShaderSourceWorkaround = normalizedVendor.startsWith("amd")
+                    || normalizedVendor.startsWith("ati technologies")
+                    || normalizedVendor.startsWith("advanced micro devices");
+            }
+        }
         if (RenderSystem.isGLES()) {
             pfnClearDepthf = GL.getFunctionProvider().getFunctionAddress("glClearDepthf");
             pfnDepthRangef = GL.getFunctionProvider().getFunctionAddress("glDepthRangef");
@@ -779,6 +792,11 @@ public final class Lwjgl3GLRenderBackend extends RenderBackend {
     }
 
     @Override
+    public void readPixels(int x, int y, int width, int height, int format, int type, long pixelBufferOffset) {
+        GL11C.glReadPixels(x, y, width, height, format, type, pixelBufferOffset);
+    }
+
+    @Override
     public void getTexImage(int target, int level, int format, int type, ByteBuffer pixels) {
         GL11C.glGetTexImage(target, level, format, type, pixels);
     }
@@ -810,7 +828,20 @@ public final class Lwjgl3GLRenderBackend extends RenderBackend {
 
     @Override
     public void shaderSource(int shader, CharSequence source) {
-        GL20C.glShaderSource(shader, source);
+        if (!amdShaderSourceWorkaround) {
+            GL20C.glShaderSource(shader, source);
+            return;
+        }
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            final ByteBuffer encodedSource = MemoryUtil.memUTF8(source, true);
+            try {
+                final PointerBuffer pointers = stack.mallocPointer(1);
+                pointers.put(encodedSource);
+                GL20C.nglShaderSource(shader, 1, pointers.address0(), 0L);
+            } finally {
+                MemoryUtil.memFree(encodedSource);
+            }
+        }
     }
 
     @Override
@@ -933,6 +964,27 @@ public final class Lwjgl3GLRenderBackend extends RenderBackend {
     @Override
     public boolean isProgram(int obj) {
         return GL20C.glIsProgram(obj);
+    }
+
+    @Override
+    public boolean supportsProgramBinary() {
+        return !RenderSystem.isGLES() && (caps.OpenGL41 || caps.GL_ARB_get_program_binary)
+            && GL11C.glGetInteger(GL41C.GL_NUM_PROGRAM_BINARY_FORMATS) > 0;
+    }
+
+    @Override
+    public void programParameteri(int program, int pname, int value) {
+        GL41C.glProgramParameteri(program, pname, value);
+    }
+
+    @Override
+    public void getProgramBinary(int program, IntBuffer length, IntBuffer binaryFormat, ByteBuffer binary) {
+        GL41C.glGetProgramBinary(program, length, binaryFormat, binary);
+    }
+
+    @Override
+    public void programBinary(int program, int binaryFormat, ByteBuffer binary) {
+        GL41C.glProgramBinary(program, binaryFormat, binary);
     }
 
     @Override
@@ -1417,31 +1469,6 @@ public final class Lwjgl3GLRenderBackend extends RenderBackend {
     @Override
     public void texStorage2D(int target, int levels, int internalFormat, int width, int height) {
         GL42C.glTexStorage2D(target, levels, internalFormat, width, height);
-    }
-
-    @Override
-    public void textureStorage2D(int texture, int levels, int internalFormat, int width, int height) {
-        GL45C.glTextureStorage2D(texture, levels, internalFormat, width, height);
-    }
-
-    @Override
-    public void texStorage1D(int target, int levels, int internalFormat, int width) {
-        GL42C.glTexStorage1D(target, levels, internalFormat, width);
-    }
-
-    @Override
-    public void texStorage3D(int target, int levels, int internalFormat, int width, int height, int depth) {
-        GL42C.glTexStorage3D(target, levels, internalFormat, width, height, depth);
-    }
-
-    @Override
-    public void textureStorage1D(int texture, int levels, int internalFormat, int width) {
-        GL45C.glTextureStorage1D(texture, levels, internalFormat, width);
-    }
-
-    @Override
-    public void textureStorage3D(int texture, int levels, int internalFormat, int width, int height, int depth) {
-        GL45C.glTextureStorage3D(texture, levels, internalFormat, width, height, depth);
     }
 
     @Override

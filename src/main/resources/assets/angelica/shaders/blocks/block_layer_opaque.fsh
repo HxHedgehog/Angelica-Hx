@@ -1,11 +1,19 @@
 #version 330 core
 
+#ifdef LEGACY
+#extension GL_EXT_gpu_shader4 : require
+#endif
+
 #import <sodium:include/fog.glsl>
 
 in vec4 v_Color;
+in vec4 v_RdhFactor;
+in vec2 v_QuadCoord;
 in vec2 v_TexCoord;
 
+#if defined(USE_FOG) && defined(CHUNK_FADE_IN_DURATION_MS) && CHUNK_FADE_IN_DURATION_MS > 0
 in float v_ChunkAgeMs;
+#endif
 
 in float v_MaterialMipBias;
 #ifdef USE_FRAGMENT_DISCARD
@@ -19,13 +27,14 @@ in float v_CylindricalFragDistance;
 in float v_FragDistance;
 #endif
 
-uniform sampler2D u_BlockTex;
+uniform sampler2D u_BlockTex; // The block texture
 
-uniform vec4 u_FogColor;
+uniform int u_FogShape;
+uniform vec4 u_FogColor; // The color of the shader fog
 
 #ifdef USE_FOG_SMOOTH
-uniform float u_FogStart;
-uniform float u_FogEnd;
+uniform float u_FogStart; // The starting position of the shader fog
+uniform float u_FogEnd; // The ending position of the shader fog
 #endif
 
 #ifdef USE_FOG_POSTMODERN
@@ -36,11 +45,11 @@ uniform float u_EnvFogEnd;
 #endif
 
 #if defined(USE_FOG_EXP) || defined(USE_FOG_EXP2)
-uniform float u_FogDensity;
+uniform float u_FogDensity; // The density of the shader fog
 #endif
 
 #ifndef LEGACY
-out vec4 fragColor;
+out vec4 fragColor; // The output fragment for the color framebuffer
 #else
 #define fragColor gl_FragColor
 #endif
@@ -68,13 +77,18 @@ float footprintScale(vec2 du, vec2 dv, vec2 texelSize, float limitTexels) {
 #endif
 
 vec4 sampleTexelSnapped(sampler2D tex, vec2 uv, vec2 texelSize, vec2 du, vec2 dv, vec2 texelsPerPixel) {
+    vec2 snapped = snapToTexelCentre(uv, texelSize, texelsPerPixel);
+
+#if defined(TERRAIN_NO_MIPS) && !defined(USE_ANISOTROPIC)
+    return textureLod(tex, snapped, 0.0);
+#else
     float gradientScale = exp2(v_MaterialMipBias);
 #ifdef USE_ANISOTROPIC
     gradientScale *= footprintScale(du * gradientScale, dv * gradientScale, texelSize, TERRAIN_GUTTER);
 #endif
 
-    return textureGrad(tex, snapToTexelCentre(uv, texelSize, texelsPerPixel),
-        du * gradientScale, dv * gradientScale);
+    return textureGrad(tex, snapped, du * gradientScale, dv * gradientScale);
+#endif
 }
 
 vec4 sampleTexelSnapped(sampler2D tex, vec2 uv, vec2 texelSize) {
@@ -132,6 +146,12 @@ vec4 sampleRGSS(sampler2D tex, vec2 uv, vec2 texelSize) {
     for (int i = 0; i < 4; i++) {
         rgss += textureGrad(tex, uv + RGSS_OFFSETS[i].x * spreadU + RGSS_OFFSETS[i].y * spreadV, gradU, gradV);
     }
+#elif defined(TERRAIN_NO_MIPS)
+    const float lod = 0.0;
+
+    for (int i = 0; i < 4; i++) {
+        rgss += textureLod(tex, uv + RGSS_OFFSETS[i] * texelSize, lod);
+    }
 #else
     float duLength = length(du / texelSize);
     float dvLength = length(dv / texelSize);
@@ -152,11 +172,15 @@ vec4 sampleRGSS(sampler2D tex, vec2 uv, vec2 texelSize) {
 #endif
 
 void main() {
+#ifdef USE_TEXEL_SNAP
     vec2 texelSize = 1.0 / vec2(textureSize(u_BlockTex, 0));
 #ifdef USE_RGSS
     vec4 diffuseColor = sampleRGSS(u_BlockTex, v_TexCoord, texelSize);
 #else
     vec4 diffuseColor = sampleTexelSnapped(u_BlockTex, v_TexCoord, texelSize);
+#endif
+#else
+    vec4 diffuseColor = texture(u_BlockTex, v_TexCoord, v_MaterialMipBias);
 #endif
 
 #ifdef USE_FRAGMENT_DISCARD
@@ -166,32 +190,51 @@ void main() {
 #endif
 
     vec4 m_color = v_Color;
+    // Apply correction factor to make the resulting color very close to what true bilinear interpolation would obtain
+    // min(x, y) * (1 - max(x, y)) == min(x, y) - (x * y)
+    float correctionWeight = min(v_QuadCoord.x, v_QuadCoord.y) - (v_QuadCoord.x * v_QuadCoord.y);
+    m_color += v_RdhFactor * correctionWeight;
 
 #ifdef USE_VANILLA_COLOR_FORMAT
+    // Apply per-vertex color. AO shade is applied ahead of time on the CPU.
     diffuseColor *= m_color;
 #else
+    // Apply per-vertex color
     diffuseColor.rgb *= m_color.rgb;
+
+    // Apply ambient occlusion "shade"
     diffuseColor.rgb *= m_color.a;
 #endif
 
 #ifdef USE_FOG
+
 #if defined(CHUNK_FADE_IN_DURATION_MS) && CHUNK_FADE_IN_DURATION_MS > 0
+    // Make chunk fade in over a short duration
     diffuseColor = vec4(mix(u_FogColor.rgb, diffuseColor.rgb, (clamp(v_ChunkAgeMs, 0, CHUNK_FADE_IN_DURATION_MS) / CHUNK_FADE_IN_DURATION_MS)), diffuseColor.a);
 #endif
 
-#ifdef USE_FOG_POSTMODERN
+#if defined(USE_FOG_POSTMODERN)
     float fogValue = max(_linearFogValue(v_CylindricalFragDistance, u_RenderDistFogStart, u_RenderDistFogEnd),
                          _linearFogValue(v_SphericalFragDistance, u_EnvFogStart, u_EnvFogEnd));
 
     fragColor = vec4(mix(diffuseColor.rgb, u_FogColor.rgb, fogValue * u_FogColor.a), diffuseColor.a);
-#elif defined(USE_FOG_EXP2)
-    fragColor = _exp2Fog(diffuseColor, v_FragDistance, u_FogColor, u_FogDensity);
+#else // Legacy fog
+    float fragDistance;
+    if (u_FogShape == FOG_SHAPE_PLANAR) {
+        fragDistance = gl_FragCoord.z / gl_FragCoord.w;
+    } else {
+        fragDistance = v_FragDistance;
+    }
+#if defined(USE_FOG_EXP2)
+    fragColor = _exp2Fog(diffuseColor, fragDistance, u_FogColor, u_FogDensity);
 #elif defined(USE_FOG_EXP)
-    fragColor = _expFog(diffuseColor, v_FragDistance, u_FogColor, u_FogDensity);
+    fragColor = _expFog(diffuseColor, fragDistance, u_FogColor, u_FogDensity);
 #elif defined(USE_FOG_SMOOTH)
-    fragColor = _linearFog(diffuseColor, v_FragDistance, u_FogColor, u_FogStart, u_FogEnd);
+    fragColor = _linearFog(diffuseColor, fragDistance, u_FogColor, u_FogStart, u_FogEnd);
 #endif
-#else
+#endif
+
+#else // No fog
     fragColor = diffuseColor;
 #endif
 }

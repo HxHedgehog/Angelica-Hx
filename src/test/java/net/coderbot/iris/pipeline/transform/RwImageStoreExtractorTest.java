@@ -50,6 +50,27 @@ class RwImageStoreExtractorTest {
         "void main() { gl_Position = iris_Vertex; }",
         "");
 
+    private static final String ATOMIC_RESULT_VSH = String.join("\n",
+        "#version 460 core",
+        "layout(r32i) uniform iimage2D counter_img;",
+        "void main() {",
+        "    int previous = imageAtomicCompSwap(counter_img, ivec2(0), 0, -1);",
+        "    if (previous == 0) {",
+        "        imageAtomicAdd(counter_img, ivec2(1), 1);",
+        "    }",
+        "    gl_Position = vec4(0.0);",
+        "}",
+        "");
+
+    @Test void raster_keepsVariablesInitializedFromAtomics() {
+        final var result = RwImageStoreExtractor.tryExtract(ATOMIC_RESULT_VSH, PatchShaderType.VERTEX, "prepare");
+        assertNotNull(result);
+        final String stripped = norm(result.strippedSource());
+        assertTrue(stripped.contains("int previous = 0;"), stripped);
+        assertTrue(stripped.contains("if (previous == 0)"), stripped);
+        assertFalse(stripped.contains("imageAtomic"), stripped);
+    }
+
     @Test void detection_returnsNullWhenNoImageStore() {
         assertNull(RwImageStoreExtractor.tryExtract(NO_IMAGESTORE_VSH, PatchShaderType.VERTEX, "shadow"));
     }
@@ -79,8 +100,14 @@ class RwImageStoreExtractorTest {
     @Test void compute_hasUniformsAndSsboBinding() {
         final var result = RwImageStoreExtractor.tryExtract(MINIMAL_VOX_VSH, PatchShaderType.VERTEX, "shadow");
         final String s = result.computeSource();
-        assertTrue(s.contains("uniform int _vg_startVertex;"));
-        assertTrue(s.contains("uniform int _vg_vertexCount;"));
+        assertTrue(s.contains("uniform int _vg_rangeBase;"));
+        assertTrue(s.contains("uniform int _vg_rangeCount;"));
+        assertTrue(s.contains("uniform int _vg_vertexTotal;"));
+        assertTrue(s.contains("uniform int _vg_invocationBase;"));
+        assertTrue(s.contains("layout(std430, binding = 10) readonly buffer _VgRanges { uvec2 r[]; } _vg_ranges;"));
+        assertTrue(s.contains("int id = int(_vg_ranges.r[_vg_lo].x + (_vg_g - _vg_ranges.r[_vg_lo].y));"));
+        assertFalse(s.contains("_vg_startVertex"));
+        assertFalse(s.contains("_vg_vertexCount"));
         assertTrue(s.contains("readonly buffer _VgVbuf"));
         assertTrue(s.contains("layout(std430, binding = " + RwImageStoreExtractor.VG_VBUF_SSBO_BINDING + ") readonly buffer _VgVbuf"), "VBO SSBO must bind at the dedicated voxelization slot (not 0..8 which shaderpacks claim via buffer.N)");
     }
@@ -209,11 +236,9 @@ class RwImageStoreExtractorTest {
     @Test void knownAttributeVariants_includesCeleritasTypings() {
         final var variants = RwImageStoreExtractor.CHUNK_VERTEX_ATTRS;
         assertNotNull(variants.get("a_PosId").get("vec3"));
-        assertNotNull(variants.get("a_PosId").get("uvec4"));
         assertNotNull(variants.get("a_Color").get("vec4"));
         assertNotNull(variants.get("a_TexCoord").get("vec2"));
         assertNotNull(variants.get("a_LightCoord").get("uint"));
-        assertNotNull(variants.get("a_LightCoord").get("ivec2"));
         assertNotNull(variants.get("mc_Entity").get("vec4"));
         assertNotNull(variants.get("mc_Entity").get("uint"));
         assertNotNull(variants.get("mc_midTexCoord").get("vec4"));
@@ -289,15 +314,6 @@ class RwImageStoreExtractorTest {
         assertTrue(s.contains("vec4 at_midBlock;"));
     }
 
-    @Test void celeritas_computeContainsDeadBranchStubGlobals() {
-        final String s = RwImageStoreExtractor.tryExtract(CELERITAS_PATCHED_VOX_VSH, PatchShaderType.VERTEX, "CELERITAS_TERRAIN").computeSource();
-        assertTrue(s.contains("uvec4 a_PosId;"), "compressed-branch stub a_PosId");
-        assertTrue(s.contains("ivec2 a_LightCoord;"), "compressed-branch stub a_LightCoord");
-        assertTrue(s.contains("#ifdef USE_VERTEX_COMPRESSION"), "expected #ifdef guard around dual-branch globals");
-        assertTrue(s.contains("#else"));
-        assertTrue(s.contains("#endif"));
-    }
-
     @Test void celeritas_unpackContainsCeleritasFormulas() {
         final String s = RwImageStoreExtractor.tryExtract(CELERITAS_PATCHED_VOX_VSH, PatchShaderType.VERTEX, "CELERITAS_TERRAIN").computeSource();
         assertTrue(s.contains("a_PosId = vec3(uintBitsToFloat(_vg_vbuf.data[base + 0u])"));
@@ -305,14 +321,11 @@ class RwImageStoreExtractorTest {
         assertTrue(s.contains("a_LightCoord = _vg_vbuf.data[base + 6u]"));
         assertTrue(s.contains("mc_Entity = _vg_vbuf.data[base + 10u]"), "celeritas-typed mc_Entity must be delivered as the raw packed uint");
         assertTrue(s.contains("mc_midTexCoord = vec2(float(_vg_vbuf.data[base + 7u] & 0xFFFFu),"), "mc_midTexCoord is an unnormalized ushort delivered raw by the vertex stage, so the compute prelude must not rescale it");
-        assertTrue(s.contains("a_PosId = uvec4(0u, 0u, 0u, 0u)"));
-        assertTrue(s.contains("a_LightCoord = ivec2(0, 0)"));
     }
 
     @Test void celeritas_computeDecodesVertexGlobals() {
         final String s = RwImageStoreExtractor.tryExtract(CELERITAS_PATCHED_VOX_VSH, PatchShaderType.VERTEX, "CELERITAS_TERRAIN").computeSource();
-        assertTrue(s.contains("_vert_position = a_PosId;"), "uncompressed branch must decode position\n\n" + s);
-        assertTrue(s.contains("_vert_position = vec3(a_PosId.xyz) * VERT_POS_SCALE + VERT_POS_OFFSET;"), "compressed branch must decode position\n\n" + s);
+        assertTrue(s.contains("_vert_position = a_PosId;"), "vertex decode must assign position\n\n" + s);
         assertTrue(s.contains("_draw_id = (_vg_draw_params >> 8) & 0xFFu;"), "_get_draw_translation depends on _draw_id\n\n" + s);
     }
 
@@ -549,13 +562,6 @@ class RwImageStoreExtractorTest {
         assertTrue(s.contains("uint mc_Entity;"), "mc_Entity must be emitted as uint matching the AST decl\n\n" + s);
         assertFalse(s.contains("vec4 mc_midTexCoord"), "mc_midTexCoord declared in AST as vec2 must not emit a vec4 variant\n\n" + s);
         assertTrue(s.contains("vec2 mc_midTexCoord;"));
-    }
-
-    @Test void celeritasIfdefAttrs_emitBothVariantsGuarded() {
-        final var result = RwImageStoreExtractor.tryExtract(CELERITAS_PATCHED_VOX_VSH, PatchShaderType.VERTEX, "CELERITAS_TERRAIN");
-        final String s = result.computeSource();
-        assertTrue(s.contains("uvec4 a_PosId;"), "compressed-branch stub a_PosId\n\n" + s);
-        assertTrue(s.contains("vec3 a_PosId;"), "uncompressed-branch live a_PosId\n\n" + s);
     }
 
     private static final String IMAGE_STORE_AS_BRACELESS_IF_BODY_VSH = String.join("\n",
