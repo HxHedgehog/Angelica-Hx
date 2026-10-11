@@ -248,6 +248,7 @@ public final class ResourceManager {
     }
 
     private long createTextureCore(int glId, int glTarget, int sdlFormat, int glFormat, int width, int height, int depth, int levels, int usage) {
+        if (getTextureHandle(glId) != 0) beforeTextureReplaced();
         usage = reconcileUsageAndWarn(glId, usage);
         final int sdlType = mapTextureType(glTarget);
         if (!SDL_GPUTextureSupportsFormat(device.getDevice(), sdlFormat, sdlType, usage)) {
@@ -309,7 +310,19 @@ public final class ResourceManager {
         return sdlFormat;
     }
 
+    private Runnable textureReplaceHook;
+
+    public void setTextureReplaceHook(Runnable hook) {
+        textureReplaceHook = hook;
+    }
+
+    private void beforeTextureReplaced() {
+        final Runnable hook = textureReplaceHook;
+        if (hook != null) hook.run();
+    }
+
     public void deleteTexture(int glId) {
+        beforeTextureReplaced();
         final long handle;
         wLock.lock();
         try {
@@ -340,6 +353,7 @@ public final class ResourceManager {
     }
 
     public void releaseTextureHandleForRealloc(int glId) {
+        beforeTextureReplaced();
         final long handle;
         wLock.lock();
         try {
@@ -2369,6 +2383,18 @@ public final class ResourceManager {
     public int nextAttribRingChunkOffset() {
         final int chunk = 1 + (int) (attribRingCounter.getAndIncrement() % (ATTRIB_RING_CHUNKS - 1));
         return chunk * ATTRIB_RING_CHUNK_BLOCKS * DUMMY_VBO_SIZE;
+    }
+
+    public long createVertexBuffer(int size) {
+        try (var stack = stackPush()) {
+            final long handle = SDL_CreateGPUBuffer(device.getDevice(), SDL_GPUBufferCreateInfo.calloc(stack).usage(SDL_GPU_BUFFERUSAGE_VERTEX).size(size));
+            if (handle == 0) {
+                LOG.error("Failed to create vertex buffer size={}: {}", size, SDLError.SDL_GetError());
+                return 0;
+            }
+            trackBufferHandle(handle);
+            return handle;
+        }
     }
 
     public long getOrCreateDummyVertexBuffer() {

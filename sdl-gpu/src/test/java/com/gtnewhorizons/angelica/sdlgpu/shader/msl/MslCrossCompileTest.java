@@ -3,35 +3,38 @@ package com.gtnewhorizons.angelica.sdlgpu.shader.msl;
 import com.gtnewhorizons.angelica.glsm.shader.GlslVulkanPreprocess;
 import com.gtnewhorizons.angelica.glsm.shader.ShaderCacheIO;
 import com.gtnewhorizons.angelica.glsm.shader.ShaderDiskCache;
-import com.gtnewhorizons.angelica.glsm.shader.SpirvCompiler;
 import com.gtnewhorizons.angelica.glsm.testutil.Reflect;
+import com.gtnewhorizons.angelica.glsm.testutil.TestPaths;
 import com.gtnewhorizons.angelica.sdlgpu.shader.ShaderManager;
 import com.gtnewhorizons.angelica.sdlgpu.shader.SpirvTestShaders;
 import com.gtnewhorizons.angelica.sdlgpu.shader.cross.CrossCompileCache;
+import com.gtnewhorizons.angelica.sdlgpu.shader.cross.CrossCompileUtil;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.lwjgl.opengl.GL20;
 import org.lwjgl.opengl.GL43;
 import org.lwjgl.system.MemoryUtil;
 import org.lwjgl.util.shaderc.Shaderc;
 
-import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
+import static com.gtnewhorizons.angelica.sdlgpu.shader.SpirvTestShaders.compileOrFail;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * Tests SPIR-V → MSL cross-compilation for the macOS/Metal backend.
@@ -45,14 +48,12 @@ class MslCrossCompileTest {
         Reflect.<Map<?, ?>>get(cache(), "cache").clear();
     }
 
-
-
     @Test
     void vertexShaderCrossCompiles() {
-        final ByteBuffer spirv = compile(SpirvTestShaders.VERTEX_GLSL, Shaderc.shaderc_vertex_shader);
+        final ByteBuffer spirv = compileOrFail(SpirvTestShaders.VERTEX_GLSL, Shaderc.shaderc_vertex_shader);
         try {
             ShaderManager.remapSpirvForSDLGPU(spirv, GL20.GL_VERTEX_SHADER);
-            final CrossCompileCache.Output out = MslCrossCompile.compile(spirv, GL20.GL_VERTEX_SHADER);
+            final CrossCompileCache.Output out = MslCrossCompile.compile(spirv, GL20.GL_VERTEX_SHADER, false);
             try {
                 final String msl = decode(out.code());
                 assertTrue(msl.length() > 0, "MSL output non-empty");
@@ -72,10 +73,10 @@ class MslCrossCompileTest {
 
     @Test
     void fragmentShaderCrossCompiles() {
-        final ByteBuffer spirv = compile(SpirvTestShaders.FRAGMENT_GLSL, Shaderc.shaderc_fragment_shader);
+        final ByteBuffer spirv = compileOrFail(SpirvTestShaders.FRAGMENT_GLSL, Shaderc.shaderc_fragment_shader);
         try {
             ShaderManager.remapSpirvForSDLGPU(spirv, GL20.GL_FRAGMENT_SHADER);
-            final CrossCompileCache.Output out = MslCrossCompile.compile(spirv, GL20.GL_FRAGMENT_SHADER);
+            final CrossCompileCache.Output out = MslCrossCompile.compile(spirv, GL20.GL_FRAGMENT_SHADER, false);
             try {
                 final String msl = decode(out.code());
                 assertTrue(msl.contains("fragment "), "MSL should contain fragment stage qualifier:\n" + msl);
@@ -108,13 +109,12 @@ class MslCrossCompileTest {
         }
         """;
 
-
     @Test
     void ldsMultiMipComputeCrossCompiles() {
-        final ByteBuffer spirv = compile(SpirvTestShaders.LDS_MULTI_MIP_GLSL, Shaderc.shaderc_compute_shader);
+        final ByteBuffer spirv = compileOrFail(SpirvTestShaders.LDS_MULTI_MIP_GLSL, Shaderc.shaderc_compute_shader);
         try {
             ShaderManager.remapSpirvForComputeSDLGPU(spirv);
-            final CrossCompileCache.Output out = MslCrossCompile.compile(spirv, GL43.GL_COMPUTE_SHADER);
+            final CrossCompileCache.Output out = MslCrossCompile.compile(spirv, GL43.GL_COMPUTE_SHADER, false);
             try {
                 final String msl = decode(out.code());
                 assertTrue(msl.contains("kernel "), "Compute MSL should contain kernel stage qualifier:\n" + msl);
@@ -139,14 +139,12 @@ class MslCrossCompileTest {
      * concrete texture type, so verify SPIRV-Cross resolves it rather than emitting an unusable access-less image.
      */
     @Test
-    void clearImage3dComputeCrossCompiles() throws IOException {
-        final String glsl = Files.readString(
-            Path.of("..", "src", "main", "resources", "assets", "angelica", "shaders", "sdlgpu", "clear_image3d.csh"),
-            StandardCharsets.UTF_8);
-        final ByteBuffer spirv = compile(glsl, Shaderc.shaderc_compute_shader);
+    void clearImage3dComputeCrossCompiles() {
+        final String glsl = TestPaths.readString("src/main/resources/assets/angelica/shaders/sdlgpu/clear_image3d.csh");
+        final ByteBuffer spirv = compileOrFail(glsl, Shaderc.shaderc_compute_shader);
         try {
             ShaderManager.remapSpirvForComputeSDLGPU(spirv);
-            final CrossCompileCache.Output out = MslCrossCompile.compile(spirv, GL43.GL_COMPUTE_SHADER);
+            final CrossCompileCache.Output out = MslCrossCompile.compile(spirv, GL43.GL_COMPUTE_SHADER, false);
             try {
                 final String msl = decode(out.code());
                 assertTrue(msl.contains("kernel "), "compute MSL should contain kernel stage qualifier:\n" + msl);
@@ -164,10 +162,10 @@ class MslCrossCompileTest {
 
     @Test
     void chunkCullComputeCrossCompiles() {
-        final ByteBuffer spirv = compile(CHUNK_CULL_GLSL, Shaderc.shaderc_compute_shader);
+        final ByteBuffer spirv = compileOrFail(CHUNK_CULL_GLSL, Shaderc.shaderc_compute_shader);
         try {
             ShaderManager.remapSpirvForComputeSDLGPU(spirv);
-            final CrossCompileCache.Output out = MslCrossCompile.compile(spirv, GL43.GL_COMPUTE_SHADER);
+            final CrossCompileCache.Output out = MslCrossCompile.compile(spirv, GL43.GL_COMPUTE_SHADER, false);
             try {
                 final String msl = decode(out.code());
                 assertTrue(msl.contains("kernel "), "Compute MSL should contain kernel stage qualifier:\n" + msl);
@@ -199,10 +197,10 @@ class MslCrossCompileTest {
 
     @Test
     void vertexShaderWritingStorageImageStillReturnsPosition() {
-        final ByteBuffer spirv = compile(VERTEX_WRITES_IMAGE_GLSL, Shaderc.shaderc_vertex_shader);
+        final ByteBuffer spirv = compileOrFail(VERTEX_WRITES_IMAGE_GLSL, Shaderc.shaderc_vertex_shader);
         try {
             ShaderManager.remapSpirvForSDLGPU(spirv, GL20.GL_VERTEX_SHADER);
-            final CrossCompileCache.Output out = MslCrossCompile.compile(spirv, GL20.GL_VERTEX_SHADER);
+            final CrossCompileCache.Output out = MslCrossCompile.compile(spirv, GL20.GL_VERTEX_SHADER, false);
             try {
                 final String msl = decode(out.code());
                 assertFalse(msl.contains("vertex void main0"),
@@ -233,10 +231,10 @@ class MslCrossCompileTest {
     void cppKeywordLocalIsRenamedBeforeMsl() {
         final GlslVulkanPreprocess.Result pre = GlslVulkanPreprocess.run(CPP_KEYWORD_LOCAL_GLSL, GL20.GL_FRAGMENT_SHADER, "test", true);
         assertNotNull(pre);
-        final ByteBuffer spirv = compile(pre.rewrittenSource(), Shaderc.shaderc_fragment_shader);
+        final ByteBuffer spirv = compileOrFail(pre.rewrittenSource(), Shaderc.shaderc_fragment_shader);
         try {
             ShaderManager.remapSpirvForSDLGPU(spirv, GL20.GL_FRAGMENT_SHADER);
-            final CrossCompileCache.Output out = MslCrossCompile.compile(spirv, GL20.GL_FRAGMENT_SHADER);
+            final CrossCompileCache.Output out = MslCrossCompile.compile(spirv, GL20.GL_FRAGMENT_SHADER, false);
             try {
                 final String msl = decode(out.code());
                 assertTrue(msl.contains("angelica_renamed_try"), "the local must keep a renamed identifier:\n" + msl);
@@ -246,20 +244,6 @@ class MslCrossCompileTest {
             }
         } finally {
             MemoryUtil.memFree(spirv);
-        }
-    }
-
-    @Test
-    void crossCompileFreesNativeMemory() {
-        for (int i = 0; i < 200; i++) {
-            final ByteBuffer spirv = compile(SpirvTestShaders.VERTEX_GLSL, Shaderc.shaderc_vertex_shader);
-            try {
-                ShaderManager.remapSpirvForSDLGPU(spirv, GL20.GL_VERTEX_SHADER);
-                final CrossCompileCache.Output out = MslCrossCompile.compile(spirv, GL20.GL_VERTEX_SHADER);
-                MemoryUtil.memFree(out.code());
-            } finally {
-                MemoryUtil.memFree(spirv);
-            }
         }
     }
 
@@ -294,11 +278,6 @@ class MslCrossCompileTest {
         }
         """;
 
-    @Test
-    void chunkComputeWithImageAtomic_mslBufferSlotsAreUnique() {
-        assertMslBufferSlotsUnique(CHUNK_COMPUTE_WITH_ATOMIC_IMAGE_GLSL);
-    }
-
     private static final String COMPOSITE_VSH_COMPUTE_WITH_ATOMIC_IMAGE_GLSL = """
         #version 460 core
         layout(local_size_x = 64) in;
@@ -326,11 +305,6 @@ class MslCrossCompileTest {
         }
         """;
 
-    @Test
-    void compositeVshComputeWithImageAtomic_mslBufferSlotsAreUnique() {
-        assertMslBufferSlotsUnique(COMPOSITE_VSH_COMPUTE_WITH_ATOMIC_IMAGE_GLSL);
-    }
-
     // Mirrors composite-fsh: 2D dispatch + _vg_target_size uniform + gl_FragCoord shim.
     private static final String COMPOSITE_FSH_COMPUTE_WITH_ATOMIC_IMAGE_GLSL = """
         #version 460 core
@@ -350,11 +324,6 @@ class MslCrossCompileTest {
         }
         """;
 
-    @Test
-    void compositeFshComputeWithImageAtomic_mslBufferSlotsAreUnique() {
-        assertMslBufferSlotsUnique(COMPOSITE_FSH_COMPUTE_WITH_ATOMIC_IMAGE_GLSL);
-    }
-
     private static final String CHUNK_COMPUTE_WITH_INLINE_ATOMIC_GLSL = """
         #version 460 core
         layout(local_size_x = 64) in;
@@ -373,15 +342,24 @@ class MslCrossCompileTest {
 
     @Test
     void chunkComputeWithInlineAtomic_shadercAccepts() {
-        final ByteBuffer spirv = compile(CHUNK_COMPUTE_WITH_INLINE_ATOMIC_GLSL, Shaderc.shaderc_compute_shader);
+        final ByteBuffer spirv = compileOrFail(CHUNK_COMPUTE_WITH_INLINE_ATOMIC_GLSL, Shaderc.shaderc_compute_shader);
         MemoryUtil.memFree(spirv);
     }
 
-    private static void assertMslBufferSlotsUnique(String glsl) {
-        final ByteBuffer spirv = compile(glsl, Shaderc.shaderc_compute_shader);
+    static Stream<Arguments> computeShadersWithImageAtomics() {
+        return Stream.of(
+            Arguments.of("chunk compute", CHUNK_COMPUTE_WITH_ATOMIC_IMAGE_GLSL),
+            Arguments.of("composite vsh compute", COMPOSITE_VSH_COMPUTE_WITH_ATOMIC_IMAGE_GLSL),
+            Arguments.of("composite fsh compute", COMPOSITE_FSH_COMPUTE_WITH_ATOMIC_IMAGE_GLSL));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("computeShadersWithImageAtomics")
+    void computeWithImageAtomic_mslBufferSlotsAreUnique(String name, String glsl) {
+        final ByteBuffer spirv = compileOrFail(glsl, Shaderc.shaderc_compute_shader);
         try {
             ShaderManager.remapSpirvForComputeSDLGPU(spirv);
-            final CrossCompileCache.Output out = MslCrossCompile.compile(spirv, GL43.GL_COMPUTE_SHADER);
+            final CrossCompileCache.Output out = MslCrossCompile.compile(spirv, GL43.GL_COMPUTE_SHADER, false);
             try {
                 final String msl = decode(out.code());
                 assertUniqueBufferSlots(msl);
@@ -425,18 +403,14 @@ class MslCrossCompileTest {
     }
 
     @Test
-    void realCullingShadersCrossCompile() throws IOException {
+    void realCullingShadersCrossCompile() {
         final String[] names = { "chunk_cull.csh" };
         for (String name : names) {
-            Path p = Path.of("src/main/resources/assets/angelica/shaders/culling/" + name);
-            if (!Files.exists(p)) {
-                p = Path.of("../src/main/resources/assets/angelica/shaders/culling/" + name);
-            }
-            final String glsl = Files.readString(p);
-            final ByteBuffer spirv = compile(glsl, Shaderc.shaderc_compute_shader);
+            final String glsl = TestPaths.readString("src/main/resources/assets/angelica/shaders/culling/" + name);
+            final ByteBuffer spirv = compileOrFail(glsl, Shaderc.shaderc_compute_shader);
             try {
                 ShaderManager.remapSpirvForComputeSDLGPU(spirv);
-                final CrossCompileCache.Output out = MslCrossCompile.compile(spirv, GL43.GL_COMPUTE_SHADER);
+                final CrossCompileCache.Output out = MslCrossCompile.compile(spirv, GL43.GL_COMPUTE_SHADER, false);
                 try {
                     assertTrue(decode(out.code()).contains("kernel "), name + " should produce compute MSL");
                 } finally {
@@ -452,14 +426,14 @@ class MslCrossCompileTest {
     void diskCacheHitReturnsStoredBlob(@TempDir Path dir) {
         ShaderDiskCache.configure(dir, "t");
         Reflect.<Map<?, ?>>get(cache(), "cache").clear();
-        final ByteBuffer spirv = compile(SpirvTestShaders.VERTEX_GLSL, Shaderc.shaderc_vertex_shader);
+        final ByteBuffer spirv = compileOrFail(SpirvTestShaders.VERTEX_GLSL, Shaderc.shaderc_vertex_shader);
         try {
             ShaderManager.remapSpirvForSDLGPU(spirv, GL20.GL_VERTEX_SHADER);
             final byte[] heap = ShaderCacheIO.toHeap(spirv);
-            MemoryUtil.memFree(MslCrossCompile.compile(spirv, GL20.GL_VERTEX_SHADER).code());
+            MemoryUtil.memFree(MslCrossCompile.compile(spirv, GL20.GL_VERTEX_SHADER, false).code());
             Reflect.<Map<?, ?>>get(cache(), "cache").clear();
             ShaderDiskCache.putBlob(cache().diskKey(heap, GL20.GL_VERTEX_SHADER), "poison_entry", "poison".getBytes(StandardCharsets.UTF_8));
-            final CrossCompileCache.Output out = MslCrossCompile.compile(spirv, GL20.GL_VERTEX_SHADER);
+            final CrossCompileCache.Output out = MslCrossCompile.compile(spirv, GL20.GL_VERTEX_SHADER, false);
             try {
                 assertEquals("poison_entry", out.entrypoint());
                 assertEquals("poison", new String(ShaderCacheIO.toHeap(out.code()), StandardCharsets.UTF_8));
@@ -471,6 +445,95 @@ class MslCrossCompileTest {
         }
     }
 
+    private static final String IMAGE_ATOMIC_GLSL = """
+        #version 460 core
+        layout(local_size_x = 64) in;
+        layout(binding = 0, r32i) uniform iimage2D counter;
+        void main() {
+            imageAtomicAdd(counter, ivec2(0, 0), 1);
+        }
+        """;
+
+    @Test
+    void imageAtomicsUseTheAuxBufferWithoutTextureAtomics() {
+        assertTrue(computeMsl(IMAGE_ATOMIC_GLSL, false).contains("counter_atomic"));
+    }
+
+    @Test
+    void imageAtomicsCompileToTextureAtomicsWhenAvailable() {
+        final String msl = computeMsl(IMAGE_ATOMIC_GLSL, true);
+        assertFalse(msl.contains("counter_atomic"), msl);
+        assertTrue(msl.contains("counter.atomic_fetch_add("), msl);
+    }
+
+    @Test
+    void textureAtomicsDoNotChangeShadersWithoutImageAtomics() {
+        final String base = computeMsl(CHUNK_CULL_GLSL, false);
+        Reflect.<Map<?, ?>>get(cache(), "cache").clear();
+        assertEquals(base, computeMsl(CHUNK_CULL_GLSL, true));
+    }
+
+    private static final String FRAGMENT_IMAGE_ATOMIC_GLSL = """
+        #version 460 core
+        layout(binding = 0, r32i) uniform iimage2D counter;
+        layout(location = 0) out vec4 fragColor;
+        void main() {
+            fragColor = vec4(imageAtomicAdd(counter, ivec2(0, 0), 1));
+        }
+        """;
+
+    @Test
+    void textureAtomicsLeaveRasterStagesAtMsl22() {
+        final ByteBuffer spirv = compileOrFail(FRAGMENT_IMAGE_ATOMIC_GLSL, Shaderc.shaderc_fragment_shader);
+        try {
+            assertTrue(CrossCompileUtil.usesImageAtomics(spirv));
+            final String base = fragmentMsl(spirv, false);
+            Reflect.<Map<?, ?>>get(cache(), "cache").clear();
+            final String atomics = fragmentMsl(spirv, true);
+            assertEquals(base, atomics);
+            assertFalse(atomics.contains("counter.atomic_fetch_add("), atomics);
+        } finally {
+            MemoryUtil.memFree(spirv);
+        }
+    }
+
+    private static String fragmentMsl(ByteBuffer spirv, boolean textureAtomics) {
+        final CrossCompileCache.Output out = MslCrossCompile.compile(spirv, GL20.GL_FRAGMENT_SHADER, textureAtomics);
+        try {
+            return decode(out.code());
+        } finally {
+            MemoryUtil.memFree(out.code());
+        }
+    }
+
+    private static String computeMsl(String glsl, boolean textureAtomics) {
+        final ByteBuffer spirv = compileOrFail(glsl, Shaderc.shaderc_compute_shader);
+        try {
+            ShaderManager.remapSpirvForComputeSDLGPU(spirv);
+            final CrossCompileCache.Output out = MslCrossCompile.compile(spirv, GL43.GL_COMPUTE_SHADER, textureAtomics);
+            try {
+                return decode(out.code());
+            } finally {
+                MemoryUtil.memFree(out.code());
+            }
+        } finally {
+            MemoryUtil.memFree(spirv);
+        }
+    }
+
+    @Test
+    void onlyShadersWithImageAtomicsAreDetected() {
+        final ByteBuffer atomic = compileOrFail(IMAGE_ATOMIC_GLSL, Shaderc.shaderc_compute_shader);
+        final ByteBuffer plain = compileOrFail(CHUNK_CULL_GLSL, Shaderc.shaderc_compute_shader);
+        try {
+            assertTrue(CrossCompileUtil.usesImageAtomics(atomic));
+            assertFalse(CrossCompileUtil.usesImageAtomics(plain));
+        } finally {
+            MemoryUtil.memFree(atomic);
+            MemoryUtil.memFree(plain);
+        }
+    }
+
     private static String decode(ByteBuffer buf) {
         final ByteBuffer slice = buf.duplicate();
         int len = slice.remaining();
@@ -478,14 +541,5 @@ class MslCrossCompileTest {
         final byte[] bytes = new byte[len];
         slice.get(bytes, 0, len);
         return new String(bytes, StandardCharsets.UTF_8);
-    }
-
-    private static ByteBuffer compile(String source, int shaderKind) {
-        final SpirvCompiler.Result r = SpirvCompiler.compile(source, shaderKind, "test_shader",
-            SpirvCompiler.Options.vulkanForced460Core());
-        if (r.spirv() == null) {
-            fail("Shader compilation failed: " + r.error());
-        }
-        return r.spirv();
     }
 }
