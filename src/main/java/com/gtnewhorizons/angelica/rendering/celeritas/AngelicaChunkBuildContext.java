@@ -123,6 +123,9 @@ public class AngelicaChunkBuildContext extends ChunkBuildContext {
         }
     }
 
+    /** Jar verification marker (20261013-A: painted-fluid smooth-light fix; scan class files for this string). */
+    private static final String PAINTED_FLUID_LIT_MARKER = "PAINTED-FLUID-LIT-20261013A";
+
     private Material selectMaterial(Material material, TextureAtlasSprite sprite, boolean isShaderPackOverride,
                                     boolean useRenderPassOptimization) {
         // Don't apply transparency-based optimization when shader pack explicitly overrides the material
@@ -223,6 +226,21 @@ public class AngelicaChunkBuildContext extends ChunkBuildContext {
 
             final boolean isFluid = blockRenderContext.renderType == ExtendedDataHelper.FLUID_RENDER_TYPE;
 
+            // ISBRH pseudo-liquids (e.g. mods painting a still-water volume inside pseudo-waterlogged
+            // blocks) submit vanilla liquid sprites from a non-fluid host block: ctx.renderType stays
+            // BLOCK, so without this their quads keep the flat tessellator lightmap while the real
+            // fluid around them is per-vertex smooth-lit, producing hard-edged bright/dark quads
+            // under shader packs ("bright square" artifacts). Detect them per-quad by sprite identity
+            // and give them the same fluid light treatment as real fluids below.
+            // The id is resolved for ALL liquid-sprite quads (no isFluid gate): Material.water ISBRH
+            // painters (sea pickle, ocean plants) rely on the rewrite too - their own block is not in
+            // the pack's fluid map, so without it mc_Entity.x reverts to -1 and shader packs stop
+            // applying water material/waving to their painted volume (idempotent for real fluids).
+            final short paintedLiquidId = shaderActive
+                ? resolvePaintedLiquidId(sprite, blockRenderContext.metadata)
+                : (short) -1;
+            final boolean fluidLit = isFluid || paintedLiquidId != -1;
+
             // If block used vanilla AO, then we can safely compute our own lighting data and ignore what vanilla
             // computed. We suppress vanilla emitting the brightness/color in MixinRenderBlocks.
             // Otherwise, we need to use the block's lightmap values as they are as the ISBRH may have
@@ -250,7 +268,7 @@ public class AngelicaChunkBuildContext extends ChunkBuildContext {
                     vertices[vIdx].trueNormal = trueNormal;
                 }
 
-                if (useAoCalculation && isFluid) {
+                if (useAoCalculation && fluidLit) {
                     calculateQuadLight(trueNormal, blockX, blockY, blockZ, worldX, worldY, worldZ, true,
                         blockAllowsSmoothLighting, shouldApplyDiffuse);
                     for (int vIdx = 0; vIdx < 4; vIdx++) {
@@ -296,11 +314,8 @@ public class AngelicaChunkBuildContext extends ChunkBuildContext {
             // water/lava programs would never apply. Liquid sprites take priority over the
             // block-level id (the pack's fluid id, resolved per-metadata, is idempotent for
             // real fluids); an explicit shader override still wins.
-            if (shaderOverrideBlockId == -1 && shaderActive) {
-                final short paintedLiquidId = resolvePaintedLiquidId(sprite, blockRenderContext.metadata);
-                if (paintedLiquidId != -1) {
-                    blockRenderContext.blockId = paintedLiquidId;
-                }
+            if (paintedLiquidId != -1 && shaderOverrideBlockId == -1) {
+                blockRenderContext.blockId = paintedLiquidId;
             }
 
             if (correctMaterial != material && builder.getEncoder() instanceof IrisExtendedChunkVertexEncoder iris) {
